@@ -8,7 +8,10 @@ use crate::boot::{Boot, Mark, Phase};
 use crate::center;
 use crate::content::{self, Canvas};
 use crate::input::{Event, Key, MouseButton};
-use crate::mode::{Mode, Navigator};
+use crate::clockface::{self, ClockFace, Section};
+use crate::home::{self, Home};
+use crate::notify::{Notice, Notifications};
+use crate::mode::{Destination, Mode, Navigator};
 use crate::search::{self, Command, Power, Search};
 use crate::status;
 use crate::system::{Focus, System};
@@ -16,7 +19,9 @@ use detends_paint::{
     space, springs, Appearance, Color, Frame, GlassSettings, MotionPreference, Palette, Rect,
     Seconds, Spring, TextureId, Vec2,
 };
-use detends_time::{Clock, TimeOfDay};
+use detends_paint::IconShape;
+use detends_time::{Clock, Fired, Schedule, TimeOfDay, WorldClock};
+use jiff::tz::TimeZone;
 
 /// The two logo marks, once the host has loaded them.
 #[derive(Clone, Copy, Debug)]
@@ -70,6 +75,13 @@ pub struct Shell {
     scale_factor: f32,
     frame: Frame,
     brand: Option<Brand>,
+    home: Home,
+    clock_face: ClockFace,
+    schedule: Schedule,
+    notifications: Notifications,
+    zone: TimeZone,
+    /// Where Clock's state is kept between runs.
+    store: Option<std::path::PathBuf>,
 
     /// How much the interface has quietened for Focus, 0 to 1.
     hush: Spring<f32>,
@@ -89,7 +101,7 @@ impl Shell {
     pub fn new(now: Seconds, size: Vec2, scale_factor: f32) -> Self {
         Self {
             boot: Boot::new(now),
-            navigator: Navigator::new(Mode::Clock),
+            navigator: Navigator::new(Destination::Home),
             system: System::default(),
             focus: None,
             clock: Clock::system(),
@@ -102,6 +114,12 @@ impl Shell {
             scale_factor,
             frame: Frame::new(size, scale_factor),
             brand: None,
+            home: Home::new(),
+            clock_face: ClockFace::new(),
+            schedule: Schedule::new(),
+            notifications: Notifications::new(),
+            zone: TimeZone::system(),
+            store: None,
             hush: Spring::new(springs::HUSH, 0.0),
             search: Search::default(),
             search_presence: Spring::new(springs::SETTLE, 0.0),
@@ -137,11 +155,114 @@ impl Shell {
 
     /// For tests: pin the wall clock so output is reproducible.
     pub fn set_clock(&mut self, clock: Clock) {
+        self.zone = clock.zone().clone();
         self.clock = clock;
     }
 
-    pub fn mode(&self) -> Mode {
+    pub fn schedule(&self) -> &Schedule {
+        &self.schedule
+    }
+
+    pub fn schedule_mut(&mut self) -> &mut Schedule {
+        &mut self.schedule
+    }
+
+    pub fn notifications(&self) -> &Notifications {
+        &self.notifications
+    }
+
+    /// Read Clock's state back, and let anything that finished while détends
+    /// was closed be finished.
+    pub fn load_schedule(&mut self, path: std::path::PathBuf) {
+        self.schedule = detends_time::store::load(&path);
+        self.schedule.reconcile(self.clock.now().zoned().timestamp());
+
+        // A first run has no world clocks; a few cities are better than an
+        // empty list that gives no hint of what the section is for.
+        if self.schedule.world.is_empty() {
+            self.schedule.world = vec![
+                WorldClock::new("Europe/London", "London"),
+                WorldClock::new("Europe/Paris", "Paris"),
+                WorldClock::new("Asia/Tokyo", "Tokyo"),
+            ];
+        }
+        self.store = Some(path);
+    }
+
+    /// Write Clock's state out. Called when it changes, not every frame.
+    pub fn save_schedule(&self) {
+        if let Some(path) = &self.store {
+            if let Err(error) = detends_time::store::save(path, &self.schedule) {
+                log::warn!("could not save the clock: {error}");
+            }
+        }
+    }
+
+    /// Fill Clock with representative state and open one utility.
+    ///
+    /// For captures only: a screenshot of an empty Clock shows the layout but
+    /// not the thing the layout is for.
+    pub fn populate_clock_for_capture(&mut self, now: Seconds, section: Section) {
+        use detends_time::Repeat;
+
+        let stamp = self.clock.now().zoned().timestamp();
+        self.schedule = Schedule::new();
+
+        self.schedule.start_timer(stamp, 18.0 * 60.0 + 42.0, Some("Deep work".into()));
+        self.schedule.start_timer(stamp, 6.0 * 60.0, Some("Bread".into()));
+        self.schedule.start_timer(stamp, 45.0 * 60.0, Some("Laundry".into()));
+
+        let weekday = self.schedule.add_alarm(stamp, 7, 30, Repeat::Weekdays);
+        if let Some(alarm) = self.schedule.alarm_mut(weekday) {
+            alarm.label = Some("Wake".into());
+        }
+        self.schedule.add_alarm(stamp, 13, 0, Repeat::Daily);
+        let off = self.schedule.add_alarm(stamp, 22, 30, Repeat::Weekends);
+        if let Some(alarm) = self.schedule.alarm_mut(off) {
+            alarm.set_enabled(false, stamp);
+        }
+
+        self.schedule.stopwatch.start(stamp - jiff::SignedDuration::from_secs(83));
+        self.schedule.stopwatch.lap(stamp - jiff::SignedDuration::from_secs(51));
+        self.schedule.stopwatch.lap(stamp - jiff::SignedDuration::from_secs(22));
+
+        self.schedule.world = vec![
+            WorldClock::new("Europe/London", "London"),
+            WorldClock::new("Europe/Paris", "Paris"),
+            WorldClock::new("Asia/Tokyo", "Tokyo"),
+            WorldClock::new("America/Los_Angeles", "San Francisco"),
+        ];
+
+        self.clock_face.select(now, section);
+        self.go(now, Mode::Clock);
+    }
+
+    /// Start a timer, and go where it can be watched.
+    pub fn start_timer(&mut self, now: Seconds, duration: Seconds, name: Option<String>) {
+        let stamp = self.clock.now().zoned().timestamp();
+        self.schedule.start_timer(stamp, duration, name);
+        self.clock_face.select(now, Section::Timers);
+        self.go(now, Mode::Clock);
+        self.save_schedule();
+    }
+
+    /// Where the workspace is.
+    pub fn destination(&self) -> Destination {
         self.navigator.current()
+    }
+
+    /// The mode in view, or `None` at Home.
+    pub fn mode(&self) -> Option<Mode> {
+        self.navigator.current().mode()
+    }
+
+    pub fn at_home(&self) -> bool {
+        self.navigator.at_home()
+    }
+
+    /// Which place Home has selected.
+    pub fn home_selection(&self) -> Mode {
+        self.home.selected()
     }
 
     pub fn system(&self) -> &System {
@@ -210,10 +331,7 @@ impl Shell {
             Command::Go(mode) => self.go(now, mode),
             Command::Focus { seconds, name } => self.begin_focus(now, name, seconds),
             // Timers land in Clock, which owns them.
-            Command::Timer { seconds, name } => {
-                self.go(now, Mode::Clock);
-                self.begin_focus(now, name, Some(seconds));
-            }
+            Command::Timer { seconds, name } => self.start_timer(now, seconds, name),
             Command::Airplane(on) => self.system.set_airplane(on),
             Command::Setting(setting) => {
                 // Settings live in System Center, so Search takes you there
@@ -261,6 +379,64 @@ impl Shell {
         }
 
         match event {
+            // Bare digits, when nothing is being typed into.
+            //
+            // The five places have to be reachable without a modifier: a
+            // combination the window system might claim is not a reliable way
+            // to reach the only five destinations a system has.
+            Event::KeyDown { key: Key::Mode(index), modifiers }
+                if modifiers.none() && !self.search.is_open() =>
+            {
+                if let Some(mode) = Mode::from_index(*index) {
+                    self.close_center(now);
+                    self.go(now, mode);
+                }
+            }
+
+            // Clock's own keyboard: the four utilities.
+            Event::KeyDown { key, modifiers }
+                if modifiers.none()
+                    && self.navigator.current() == Destination::Mode(Mode::Clock)
+                    && !self.search.is_open() =>
+            {
+                match key {
+                    Key::Left => self.clock_face.step(now, -1),
+                    Key::Right => self.clock_face.step(now, 1),
+                    Key::Space => {
+                        // Space runs the stopwatch when it is the one open,
+                        // which is the only thing Space could sensibly mean
+                        // while looking at a stopwatch.
+                        if self.clock_face.section() == Section::Stopwatch {
+                            let stamp = self.clock.now().zoned().timestamp();
+                            self.schedule.stopwatch.toggle(stamp);
+                            self.save_schedule();
+                        }
+                    }
+                    Key::Enter => {
+                        if self.clock_face.section() == Section::Stopwatch {
+                            let stamp = self.clock.now().zoned().timestamp();
+                            self.schedule.stopwatch.lap(stamp);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Home's own keyboard.
+            Event::KeyDown { key, modifiers }
+                if modifiers.none() && self.navigator.at_home() && !self.search.is_open() =>
+            {
+                match key {
+                    Key::Left => self.home.step(now, -1),
+                    Key::Right => self.home.step(now, 1),
+                    Key::Enter | Key::Space => {
+                        let selected = self.home.selected();
+                        self.go(now, selected);
+                    }
+                    _ => {}
+                }
+            }
+
             Event::KeyDown { key, modifiers } if modifiers.only_sys() => match key {
                 // Super+Space: the one universal surface (§13).
                 Key::Space => {
@@ -300,11 +476,18 @@ impl Shell {
                 }
             }
 
+            // Escape backs out one step: first any temporary surface, then the
+            // mode, landing at Home. It never leaves the system — quitting is
+            // the window's own business.
             Event::KeyDown {
                 key: Key::Escape, ..
             } => {
-                self.close_search(now);
-                self.close_center(now);
+                if self.search.is_open() || self.center_open {
+                    self.close_search(now);
+                    self.close_center(now);
+                } else {
+                    self.go_home(now);
+                }
             }
 
             // Clicking the cluster opens System Center (§10).
@@ -326,6 +509,24 @@ impl Shell {
                     if !panel.contains(at) {
                         self.close_center(now);
                     }
+                } else if self.navigator.current() == Destination::Mode(Mode::Clock) {
+                    let area = self.mode_area();
+                    if let Some(section) = clockface::hit(area, at) {
+                        self.clock_face.select(now, section);
+                    }
+                } else if self.navigator.at_home() {
+                    // The reason Home exists: the five places can be pressed.
+                    if let Some(mode) = home::hit(self.size, at) {
+                        self.go(now, mode);
+                    }
+                }
+            }
+
+            // Moving the pointer over Home previews the selection, so the
+            // keyboard and the pointer never disagree about where you are.
+            Event::PointerMoved { x, y } if self.navigator.at_home() => {
+                if let Some(mode) = home::hit(self.size, Vec2 { x: *x, y: *y }) {
+                    self.home.select(now, mode);
                 }
             }
             Event::AppearanceChanged { prefers_dark } => {
@@ -346,8 +547,19 @@ impl Shell {
         }
     }
 
-    pub fn go(&mut self, now: Seconds, mode: Mode) {
-        self.navigator.go(now, mode);
+    pub fn go(&mut self, now: Seconds, to: impl Into<Destination>) {
+        let to = to.into();
+        // Leaving Home leaves the selection on where you went, so coming back
+        // puts the cursor where you were rather than resetting it.
+        if let Some(mode) = to.mode() {
+            self.home.select(now, mode);
+        }
+        self.navigator.go(now, to);
+    }
+
+    /// Back to Home.
+    pub fn go_home(&mut self, now: Seconds) {
+        self.navigator.go(now, Destination::Home);
     }
 
     /// Begin a Focus session (§12). A global state, never a mode.
@@ -384,6 +596,29 @@ impl Shell {
         self.boot.update(now);
         self.navigator.settle(now);
 
+        // Time keeps running whatever is on screen (§5): a timer started in
+        // Clock finishes while the user is in Mail, and says so.
+        let stamp = self.clock.now().zoned().timestamp();
+        let fired = self.schedule.tick(stamp, &self.zone);
+        if !fired.is_empty() {
+            let focused = self.focus.is_some();
+            for event in &fired {
+                self.notifications.post(
+                    Notice {
+                        title: event.title(),
+                        detail: event.detail().to_string(),
+                        icon: match event {
+                            Fired::Timer { .. } => IconShape::Timer,
+                            Fired::Alarm { .. } => IconShape::Alarm,
+                        },
+                    },
+                    focused,
+                );
+            }
+            self.save_schedule();
+        }
+        self.notifications.update(now);
+
         // A finished session ends itself rather than sitting at zero.
         if self.focus.as_ref().is_some_and(|f| f.finished(now)) {
             self.end_focus(now);
@@ -402,6 +637,12 @@ impl Shell {
             || !self.hush.at_rest(now)
             || !self.search_presence.at_rest(now)
             || !self.center_presence.at_rest(now)
+            || !self.home.settled(now)
+            || !self.clock_face.settled(now)
+            || self.notifications.animating(now)
+            // A running timer or stopwatch has to redraw about once a second,
+            // even when nothing else is moving.
+            || self.schedule.is_active()
         {
             self.frame.keep_animating();
         }
@@ -429,12 +670,16 @@ impl Shell {
 
         self.draw_modes(now, &time);
 
-        status::draw_mode_label(
-            &mut self.frame,
-            &self.palette,
-            self.navigator.current().name(),
-            chrome,
-        );
+        // Home names itself only by the mark; naming a mode you are looking at
+        // is useful, naming Home is noise.
+        if !self.navigator.at_home() {
+            status::draw_mode_label(
+                &mut self.frame,
+                &self.palette,
+                self.navigator.current().name(),
+                chrome,
+            );
+        }
 
         let cluster = status::draw(
             &mut self.frame,
@@ -467,11 +712,17 @@ impl Shell {
             self.size,
             self.search_presence.value(now).clamp(0.0, 1.0),
         );
+
+        self.notifications.draw(&mut self.frame, &self.palette, now);
+    }
+
+    /// The area a mode may use, kept clear of the cluster's margins.
+    fn mode_area(&self) -> Rect {
+        Rect::from_min_size(Vec2::ZERO, self.size).inset(space::VAST * 0.5)
     }
 
     fn draw_modes(&mut self, now: Seconds, time: &TimeOfDay) {
-        // The area a mode may use, kept clear of the cluster's margins.
-        let area = Rect::from_min_size(Vec2::ZERO, self.size).inset(space::VAST * 0.5);
+        let area = self.mode_area();
 
         // While a temporary surface is up, the workspace recedes — dimmer and
         // very slightly smaller. One thing owns attention at a time (rule 2),
@@ -485,33 +736,69 @@ impl Shell {
         let recede_opacity = 1.0 - surface * 0.55;
         let recede_scale = 1.0 - surface * 0.012;
 
-        // The departing mode first, so the arriving one sits over it.
+        // The departing destination first, so the arriving one sits over it.
         if let Some(previous) = self.navigator.previous() {
             let (opacity, scale) = self.navigator.outgoing(now);
             let opacity = opacity * recede_opacity;
             if opacity > 0.004 {
+                self.draw_destination(previous, area, opacity, scale * recede_scale, now, time);
+            }
+        }
+
+        let (opacity, scale) = self.navigator.incoming(now);
+        let current = self.navigator.current();
+        self.draw_destination(
+            current,
+            area,
+            opacity * recede_opacity,
+            scale * recede_scale,
+            now,
+            time,
+        );
+    }
+
+    fn draw_destination(
+        &mut self,
+        destination: Destination,
+        area: Rect,
+        opacity: f32,
+        scale: f32,
+        now: Seconds,
+        time: &TimeOfDay,
+    ) {
+        match destination {
+            Destination::Home => {
+                self.home
+                    .draw(&mut self.frame, &self.palette, time, now, opacity, scale);
+            }
+            // Clock is its own environment rather than a placeholder layout.
+            Destination::Mode(Mode::Clock) => {
+                let stamp = self.clock.now().zoned().timestamp();
+                self.clock_face.draw(
+                    &mut self.frame,
+                    &self.palette,
+                    area,
+                    time,
+                    &self.schedule,
+                    stamp,
+                    &self.zone,
+                    now,
+                    opacity,
+                    scale,
+                );
+            }
+            Destination::Mode(mode) => {
                 let mut canvas = Canvas {
                     frame: &mut self.frame,
                     palette: &self.palette,
                     area,
                     opacity,
-                    scale: scale * recede_scale,
+                    scale,
                     time,
                 };
-                content::draw(previous, &mut canvas);
+                content::draw(mode, &mut canvas);
             }
         }
-
-        let (opacity, scale) = self.navigator.incoming(now);
-        let mut canvas = Canvas {
-            frame: &mut self.frame,
-            palette: &self.palette,
-            area,
-            opacity: opacity * recede_opacity,
-            scale: scale * recede_scale,
-            time,
-        };
-        content::draw(self.navigator.current(), &mut canvas);
     }
 }
 
@@ -564,7 +851,95 @@ mod tests {
             s.iter().any(|t| t.contains("5:14")),
             "the cluster should show the time"
         );
-        assert!(s.iter().any(|t| t == "CLOCK"), "the mode should be named");
+
+        // Boot lands on Home, which shows the time and the five places rather
+        // than dropping the user into a mode with nothing to press.
+        assert!(shell.at_home());
+        for mode in Mode::ALL {
+            assert!(s.iter().any(|t| t == mode.name()), "{mode:?} is not offered");
+        }
+        assert!(
+            !s.iter().any(|t| t == "HOME" || t == "DÉTENDS"),
+            "Home should not label itself"
+        );
+    }
+
+    #[test]
+    fn every_place_can_be_pressed_from_home() {
+        // The fix for a system that appeared to do nothing: the five places
+        // are reachable with a pointer, not only by unannounced keystrokes.
+        let (mut shell, t) = booted();
+        for (mode, rect) in crate::home::layout(vec2(1512.0, 982.0)) {
+            shell.go_home(t);
+            shell.tick(t);
+            shell.input(
+                t,
+                &Event::PointerDown {
+                    x: rect.center.x,
+                    y: rect.center.y,
+                    button: MouseButton::Left,
+                },
+            );
+            assert_eq!(shell.mode(), Some(mode), "clicking {mode:?} did nothing");
+        }
+    }
+
+    #[test]
+    fn a_bare_number_goes_to_its_place() {
+        // No modifier, so nothing in the window system can intercept it.
+        let (mut shell, mut t) = booted();
+        for mode in Mode::ALL {
+            t += 1.0;
+            press(&mut shell, t, Key::Mode(mode.index()));
+            assert_eq!(shell.mode(), Some(mode), "{} did nothing", mode.index());
+        }
+    }
+
+    #[test]
+    fn escape_backs_out_to_home_rather_than_quitting() {
+        let (mut shell, t) = booted();
+        shell.go(t, Mode::Studio);
+        assert!(!shell.at_home());
+
+        press(&mut shell, t, Key::Escape);
+        assert!(shell.at_home(), "Escape should land Home");
+    }
+
+    #[test]
+    fn escape_dismisses_a_surface_before_leaving_the_mode() {
+        // One step back at a time, so Escape never throws away more than the
+        // user meant.
+        let (mut shell, t) = booted();
+        shell.go(t, Mode::Mail);
+        shell.open_search(t);
+
+        press(&mut shell, t, Key::Escape);
+        assert!(!shell.search_is_open());
+        assert_eq!(shell.mode(), Some(Mode::Mail), "it left the mode too");
+
+        press(&mut shell, t, Key::Escape);
+        assert!(shell.at_home());
+    }
+
+    #[test]
+    fn arrow_keys_and_enter_work_at_home() {
+        let (mut shell, t) = booted();
+        assert_eq!(shell.home_selection(), Mode::Music);
+
+        press(&mut shell, t, Key::Right);
+        press(&mut shell, t, Key::Right);
+        assert_eq!(shell.home_selection(), Mode::Mail);
+
+        press(&mut shell, t, Key::Enter);
+        assert_eq!(shell.mode(), Some(Mode::Mail));
+    }
+
+    #[test]
+    fn coming_back_home_remembers_where_you_were() {
+        let (mut shell, t) = booted();
+        shell.go(t, Mode::Files);
+        shell.go_home(t);
+        assert_eq!(shell.home_selection(), Mode::Files);
     }
 
     #[test]
@@ -581,7 +956,7 @@ mod tests {
             );
             assert_eq!(
                 shell.mode(),
-                mode,
+                Some(mode),
                 "Super+{} should go to {mode:?}",
                 mode.index()
             );
@@ -589,10 +964,12 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_number_does_not_switch_modes() {
-        // Otherwise typing into Search or a document would teleport the user.
+    fn a_bare_number_typed_into_search_is_text() {
+        // A digit navigates — except while Search has the keyboard, where it
+        // has to be a character or the field would be unusable.
         let (mut shell, t) = booted();
-        let before = shell.mode();
+        shell.go(t, Mode::Files);
+        shell.open_search(t);
         shell.input(
             t,
             &Event::KeyDown {
@@ -600,7 +977,8 @@ mod tests {
                 modifiers: Modifiers::default(),
             },
         );
-        assert_eq!(shell.mode(), before);
+        assert!(shell.search_is_open(), "the field closed");
+        assert_eq!(shell.mode(), Some(Mode::Files), "a digit navigated while typing");
     }
 
     #[test]
@@ -614,7 +992,7 @@ mod tests {
                 modifiers: sys(),
             },
         );
-        assert_eq!(shell.mode(), Mode::Clock, "a keystroke landed during boot");
+        assert!(shell.at_home(), "a keystroke landed during boot");
     }
 
     #[test]
@@ -666,8 +1044,11 @@ mod tests {
     fn focus_quietens_the_chrome_without_touching_the_content() {
         // §12: Focus should make détends quieter, not announce itself.
         let (mut shell, t) = booted();
+        // The mode label only exists inside a mode; Home does not name itself.
+        shell.go(t, Mode::Mail);
+        shell.tick(t + 2.0);
         let bright = shell
-            .tick(t)
+            .tick(t + 2.0)
             .frame
             .items
             .iter()
@@ -675,9 +1056,9 @@ mod tests {
             .map(|i| i.opacity)
             .expect("mode label");
 
-        shell.begin_focus(t, Some("Physics homework".into()), Some(25.0 * 60.0));
+        shell.begin_focus(t + 2.0, Some("Physics homework".into()), Some(25.0 * 60.0));
         let dim = shell
-            .tick(t + 2.0)
+            .tick(t + 4.0)
             .frame
             .items
             .iter()
@@ -693,8 +1074,16 @@ mod tests {
     fn focus_shows_its_readout_in_the_cluster() {
         let (mut shell, t) = booted();
         shell.begin_focus(t, None, Some(42.0 * 60.0 + 18.0));
-        let s = texts(shell.tick(t).frame);
-        assert!(s.iter().any(|x| x.starts_with("◎ 42:18")), "got {s:?}");
+        let frame = shell.tick(t).frame;
+        let s = texts(frame);
+        assert!(s.iter().any(|x| x.starts_with("42:18")), "got {s:?}");
+
+        // The ring beside the readout is drawn, since ◎ is not in the font.
+        let has_ring = frame.items.iter().any(|i| {
+            matches!(&i.primitive, detends_paint::Primitive::Icon(icon)
+                if icon.shape == detends_paint::IconShape::Focus)
+        });
+        assert!(has_ring, "the focus ring is missing");
     }
 
     #[test]
@@ -713,7 +1102,7 @@ mod tests {
         let (mut shell, t) = booted();
         shell.go(t, Mode::Mail);
         shell.begin_focus(t, None, None);
-        assert_eq!(shell.mode(), Mode::Mail);
+        assert_eq!(shell.mode(), Some(Mode::Mail));
     }
 
     #[test]
@@ -819,7 +1208,7 @@ mod tests {
         press(&mut shell, t, Key::Enter);
 
         assert!(!shell.search_is_open(), "the field stayed open");
-        assert_eq!(shell.mode(), Mode::Files);
+        assert_eq!(shell.mode(), Some(Mode::Files));
     }
 
     #[test]
@@ -835,13 +1224,13 @@ mod tests {
     #[test]
     fn escape_closes_search_without_running_anything() {
         let (mut shell, t) = booted();
-        let before = shell.mode();
+        shell.go(t, Mode::Files);
         shell.open_search(t);
         type_into_search(&mut shell, t, "music");
         press(&mut shell, t, Key::Escape);
 
         assert!(!shell.search_is_open());
-        assert_eq!(shell.mode(), before, "Escape should not have navigated");
+        assert_eq!(shell.mode(), Some(Mode::Files), "Escape should not have navigated");
     }
 
     #[test]
@@ -853,7 +1242,7 @@ mod tests {
         type_into_search(&mut shell, t, "timer 2");
         press(&mut shell, t, Key::Mode(5));
 
-        assert_eq!(shell.mode(), Mode::Mail, "a digit navigated");
+        assert_eq!(shell.mode(), Some(Mode::Mail), "a digit navigated");
         assert!(shell.search_is_open());
     }
 
@@ -868,7 +1257,7 @@ mod tests {
                 modifiers: sys(),
             },
         );
-        assert_eq!(shell.mode(), Mode::Music);
+        assert_eq!(shell.mode(), Some(Mode::Music));
         assert!(
             !shell.search_is_open(),
             "navigating should dismiss the field"
@@ -887,9 +1276,58 @@ mod tests {
         shell.open_search(t);
         type_into_search(&mut shell, t, "timer 20 minutes");
         press(&mut shell, t, Key::Enter);
-        // A timer belongs to Clock, which owns time.
-        assert_eq!(shell.mode(), Mode::Clock);
-        assert!(shell.focus().is_some());
+
+        // A timer is a real timer now, not a Focus session wearing its name.
+        assert_eq!(shell.mode(), Some(Mode::Clock), "a timer belongs in Clock");
+        assert_eq!(shell.schedule().timers.len(), 1);
+        assert!((shell.schedule().timers[0].duration - 1200.0).abs() < 1.0);
+        assert!(shell.focus().is_none(), "a timer is not a Focus session");
+    }
+
+    #[test]
+    fn a_timer_finishes_while_the_user_is_somewhere_else() {
+        // §5: alarms and timers keep running whatever mode is on screen.
+        let (mut shell, t) = booted();
+        shell.open_search(t);
+        type_into_search(&mut shell, t, "timer 10 seconds");
+        press(&mut shell, t, Key::Enter);
+
+        shell.go(t, Mode::Mail);
+        assert_eq!(shell.mode(), Some(Mode::Mail));
+
+        // The shell's wall clock is frozen in tests, so advance it past the
+        // timer's end and tick.
+        shell.set_clock(Clock::frozen_at(2026, 9, 17, 17, 15, "UTC").unwrap());
+        shell.tick(t + 1.0);
+
+        assert!(
+            shell.notifications().is_showing() || shell.notifications().animating(t + 1.0),
+            "the timer finished silently while the user was elsewhere"
+        );
+    }
+
+    #[test]
+    fn a_timer_finishing_during_focus_is_collected_rather_than_shown() {
+        // §12: Focus is not interrupted. Nothing is thrown away either.
+        let (mut shell, t) = booted();
+        shell.start_timer(t, 10.0, Some("Bread".into()));
+        shell.begin_focus(t, Some("Physics".into()), None);
+
+        shell.set_clock(Clock::frozen_at(2026, 9, 17, 17, 15, "UTC").unwrap());
+        shell.tick(t + 1.0);
+
+        assert!(!shell.notifications().is_showing(), "Focus was interrupted");
+        assert_eq!(shell.notifications().collected().len(), 1);
+    }
+
+    #[test]
+    fn clock_opens_on_its_utilities() {
+        let (mut shell, t) = booted();
+        shell.go(t, Mode::Clock);
+        let s = texts(shell.tick(t + 1.0).frame);
+        for name in ["Timers", "Alarms", "Stopwatch", "World"] {
+            assert!(s.iter().any(|x| x == name), "missing {name} in {s:?}");
+        }
     }
 
     #[test]
@@ -1029,7 +1467,7 @@ mod tests {
         let clock = frame
             .items
             .iter()
-            .find(|i| i.id == detends_paint::Id::of("clock-time"))
+            .find(|i| i.id == detends_paint::Id::of("home-time"))
             .expect("the clock");
         assert!((clock.primitive.bounds().center.x - 1920.0).abs() < 2.0);
     }

@@ -17,7 +17,8 @@ mod tokens;
 
 pub use color::{linear_to_srgb, rgba, srgb_to_linear, Color};
 pub use display_list::{
-    Align, Fill, Frame, Glass, Id, Image, Item, Layer, Primitive, Text, TextureId,
+    Align, Fill, Frame, Glass, Icon, IconShape, Id, Image, Item, Layer, Primitive, Text, TextureId,
+    ICON_STROKE,
 };
 pub use geometry::{vec2, Rect, Vec2};
 pub use tokens::{space, text, Appearance, GlassSettings, Palette, TextStyle};

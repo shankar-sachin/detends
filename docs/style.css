@@ -1,0 +1,213 @@
+/* détends — the landing page.
+ *
+ * Plain CSS, no framework and no build step. The page borrows the system's own
+ * restraint: one typeface, a near-monochrome palette, and a great deal of space
+ * left alone. */
+
+:root {
+  --ground: #08090b;
+  --ground-far: #16191f;
+  --text: #f2f4f7;
+  --text-soft: #a8adb6;
+  --text-faint: #6b7280;
+  --rim: rgba(255, 255, 255, 0.10);
+  --accent: #7fb2e8;
+
+  --measure: 34rem;
+  --gap: clamp(4rem, 12vh, 9rem);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+
+body {
+  margin: 0;
+  padding: 0 clamp(1rem, 5vw, 3rem);
+  background: var(--ground);
+  color: var(--text);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-weight: 300;
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* The pool of light the whole page sits in — the same composition the shell
+   draws behind its glass. */
+.field {
+  position: fixed;
+  inset: -20vmax;
+  z-index: -1;
+  background:
+    radial-gradient(60vmax 50vmax at 22% 12%, var(--ground-far), transparent 70%),
+    radial-gradient(45vmax 40vmax at 82% 78%, #12161c, transparent 72%);
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- hero --- */
+
+.hero {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: clamp(6rem, 22vh, 14rem) 0 var(--gap);
+  text-align: center;
+}
+
+.wordmark {
+  width: min(78%, 26rem);
+  height: auto;
+  display: block;
+  margin: 0 auto 2.5rem;
+}
+
+.tagline {
+  margin: 0;
+  font-size: clamp(1.05rem, 2.4vw, 1.4rem);
+  font-weight: 200;
+  line-height: 1.55;
+  color: var(--text-soft);
+  letter-spacing: -0.01em;
+}
+
+.release {
+  margin: 2.5rem 0 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.release span { color: var(--text-soft); }
+
+/* -------------------------------------------------------------- content --- */
+
+main { padding-bottom: var(--gap); }
+
+section { margin: 0 auto var(--gap); }
+
+h2 {
+  margin: 0 0 1.25rem;
+  font-size: clamp(1.4rem, 3vw, 1.85rem);
+  font-weight: 300;
+  letter-spacing: -0.022em;
+  line-height: 1.25;
+  color: var(--text);
+}
+
+p { margin: 0 0 1.15rem; color: var(--text-soft); }
+p:last-child { margin-bottom: 0; }
+em { font-style: normal; color: var(--text); }
+
+.prose { max-width: var(--measure); }
+
+.note {
+  margin-top: 1.75rem;
+  font-size: 0.93rem;
+  color: var(--text-faint);
+}
+
+/* Screenshots sit on glass of their own, so the page and the system agree
+   about what a surface looks like. */
+.shot img,
+figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 14px;
+  border: 1px solid var(--rim);
+  background: #000;
+}
+
+.shot {
+  max-width: 62rem;
+}
+
+.caption,
+figcaption {
+  margin: 1rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.places { max-width: 62rem; }
+.places h2 { text-align: center; margin-bottom: 2.5rem; }
+.places .note { text-align: center; max-width: var(--measure); margin-inline: auto; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1.5rem;
+}
+.grid figure { margin: 0; }
+.grid figcaption { margin-top: 0.75rem; }
+
+.pair {
+  max-width: 62rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  gap: 1.75rem;
+}
+.pair figure { margin: 0; }
+
+.ledger {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rim);
+}
+.ledger li {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  gap: 1.25rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--rim);
+  color: var(--text-soft);
+  font-size: 0.97rem;
+}
+.ledger span {
+  color: var(--text);
+  font-weight: 500;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding-top: 0.2em;
+}
+@media (max-width: 30rem) {
+  .ledger li { grid-template-columns: 1fr; gap: 0.15rem; }
+}
+
+footer {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding-top: var(--gap);
+  border-top: 1px solid var(--rim);
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--text-faint);
+}
+footer p { margin: 0 0 0.4rem; color: inherit; }
+.quiet { opacity: 0.72; }
+
+/* --------------------------------------------------------------- motion --- */
+
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity 0.7s ease, transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.reveal.shown {
+  opacity: 1;
+  transform: none;
+}
+
+/* Reduced motion is a requirement, not a preference — in the system and here.
+   Everything still arrives; nothing travels. */
+@media (prefers-reduced-motion: reduce) {
+  .reveal { transition: opacity 0.2s linear; transform: none; }
+}

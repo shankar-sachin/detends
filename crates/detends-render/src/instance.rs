@@ -4,7 +4,7 @@
 //! change to a shader's inputs is a change to one adjacent pair rather than a
 //! hunt through the renderer.
 
-use detends_paint::{Color, Fill, Glass, Image, Rect};
+use detends_paint::{Color, Fill, Glass, Icon, Image, Rect};
 
 /// Per-pane data for `glass.wgsl`.
 #[repr(C)]
@@ -109,6 +109,42 @@ fn source_rect(r: &Rect) -> [f32; 4] {
     }
 }
 
+/// Per-icon data for `icon.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct IconInstance {
+    pub center: [f32; 2],
+    pub half_size: [f32; 2],
+    /// shape index, stroke width in icon space, rim strength, opacity
+    pub params: [f32; 4],
+    pub color: [f32; 4],
+}
+
+impl IconInstance {
+    pub fn from_paint(icon: &Icon, opacity: f32) -> Self {
+        Self {
+            center: [icon.rect.center.x, icon.rect.center.y],
+            half_size: [icon.rect.half.x, icon.rect.half.y],
+            params: [
+                icon.shape as u32 as f32,
+                // The icon's design grid spans −1…+1, so a stroke expressed as
+                // a fraction of the icon's size is twice that in icon space.
+                (icon.stroke * 2.0).max(0.001),
+                icon.rim.clamp(0.0, 1.0),
+                opacity.clamp(0.0, 1.0),
+            ],
+            color: [icon.color.r, icon.color.g, icon.color.b, icon.color.a],
+        }
+    }
+
+    pub const LAYOUT: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        0 => Float32x2, // center
+        1 => Float32x2, // half_size
+        2 => Float32x4, // params
+        3 => Float32x4, // color
+    ];
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GlassUniforms {
@@ -199,6 +235,41 @@ mod tests {
             .max()
             .unwrap();
         assert_eq!(flat_span, std::mem::size_of::<FlatInstance>() as u64);
+    }
+
+    #[test]
+    fn icon_conversion_carries_the_shape_and_weight() {
+        use detends_paint::{IconShape, ICON_STROKE};
+        let icon = Icon {
+            rect: Rect::from_center_size(vec2(100.0, 50.0), vec2(40.0, 40.0)),
+            shape: IconShape::Files,
+            stroke: ICON_STROKE,
+            rim: 0.5,
+            ..Default::default()
+        };
+        let i = IconInstance::from_paint(&icon, 0.8);
+        assert_eq!(i.center, [100.0, 50.0]);
+        assert_eq!(i.params[0], IconShape::Files as u32 as f32);
+        assert!((i.params[1] - ICON_STROKE * 2.0).abs() < 1e-6);
+        assert_eq!(i.params[3], 0.8);
+    }
+
+    #[test]
+    fn every_icon_shape_survives_the_round_trip_to_a_float() {
+        use detends_paint::IconShape;
+        // The shape index travels as a float because integer varyings must be
+        // flat in WGSL. Every index has to land back on itself after the
+        // shader rounds it.
+        for shape in IconShape::ALL {
+            let encoded = shape as u32 as f32;
+            assert_eq!((encoded + 0.5) as u32, shape as u32, "{shape:?} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn a_zero_stroke_is_clamped_so_an_icon_is_never_invisible() {
+        let icon = Icon { stroke: 0.0, ..Default::default() };
+        assert!(IconInstance::from_paint(&icon, 1.0).params[1] > 0.0);
     }
 
     #[test]

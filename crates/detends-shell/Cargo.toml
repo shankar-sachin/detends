@@ -9,3 +9,5 @@ description = "The détends shell: five modes, one System Center, one Search."
 [dependencies]
 detends-paint = { workspace = true }
 detends-time = { workspace = true }
+jiff = { workspace = true }
+log = { workspace = true }

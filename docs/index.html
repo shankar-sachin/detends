@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>détends — calm computing</title>
+<meta name="description" content="détends is an operating system shell built on five places, one System Center, one Search, and one thing at a time.">
+<meta name="color-scheme" content="dark">
+
+<meta property="og:title" content="détends">
+<meta property="og:description" content="Five places. One System Center. One Search. One thing at a time.">
+<meta property="og:image" content="img/home.jpg">
+<meta property="og:type" content="website">
+
+<link rel="icon" href="img/mark.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="field" aria-hidden="true"></div>
+
+<header class="hero">
+  <img class="wordmark" src="img/wordmark.png" alt="détends">
+  <p class="tagline">Five places. One System Center. One Search.<br>One thing at a time.</p>
+  <p class="release">Hydrogen <span>1.1.0</span></p>
+</header>
+
+<main>
+
+<section class="shot reveal">
+  <img src="img/home.jpg" alt="The détends home screen: the time above five icons for Music, Clock, Mail, Studio and Files.">
+  <p class="caption">Home. The time, and the five places beneath it.</p>
+</section>
+
+<section class="prose reveal">
+  <h2>An operating system that does not compete with you</h2>
+  <p>
+    détends is not a desktop with a prettier theme. There is no dock, no
+    taskbar, no desktop icons and no notification centre. Five destinations,
+    one panel of system state, one search field, and a great deal of empty
+    space left deliberately empty.
+  </p>
+</section>
+
+<section class="places reveal">
+  <h2>Five places</h2>
+  <div class="grid">
+    <figure><img src="img/music.jpg" alt="Music: album artwork, track, artist and transport controls."><figcaption>Music</figcaption></figure>
+    <figure><img src="img/clock.jpg" alt="Clock: timers, alarms, stopwatch and world clock on one surface."><figcaption>Clock</figcaption></figure>
+    <figure><img src="img/mail.jpg" alt="Mail: a message, with the message itself dominating."><figcaption>Mail</figcaption></figure>
+    <figure><img src="img/studio.jpg" alt="Studio: Page, Deck and Grid."><figcaption>Studio</figcaption></figure>
+    <figure><img src="img/files.jpg" alt="Files: Recents, Studio, Downloads and Screenshots."><figcaption>Files</figcaption></figure>
+  </div>
+  <p class="note">
+    Switching transforms the workspace rather than opening a window. Interrupt a
+    transition halfway and it redirects rather than restarting.
+  </p>
+</section>
+
+<section class="prose reveal">
+  <h2>Glass is a material, not a decoration</h2>
+  <p>
+    A pane in détends is a physical object: it has a thickness, a rounded bevel
+    and an index of refraction, and everything it does follows from those. Light
+    bends only at the borders, so the body stays clean and readable — the
+    opposite of a blurred rectangle, where the middle is exactly where the
+    content becomes hardest to read.
+  </p>
+  <p>
+    Everything is composited in linear light and encoded once, at the very end,
+    with blue-noise dither applied <em>after</em> the transfer curve rather than
+    before it.
+  </p>
+</section>
+
+<section class="pair reveal">
+  <figure><img src="img/system-center.jpg" alt="System Center, grown out of the status cluster."><figcaption>System Center grows out of the status cluster you pressed.</figcaption></figure>
+  <figure><img src="img/search.jpg" alt="Universal search with a timer command typed into it."><figcaption>Search takes Super + Space, acts, and disappears.</figcaption></figure>
+</section>
+
+<section class="shot reveal">
+  <img src="img/icons.jpg" alt="The détends icon set at three sizes.">
+  <p class="caption">
+    The icons are signed-distance fields evaluated in the shader, not glyphs —
+    exact at any size, and lit by the same light as the glass.
+  </p>
+</section>
+
+<section class="prose reveal">
+  <h2>What Hydrogen does today</h2>
+  <ul class="ledger">
+    <li><span>Home</span> the time and five places, by pointer or keyboard</li>
+    <li><span>Clock</span> timers, alarms, stopwatch and world clock, persisted</li>
+    <li><span>Focus</span> a global state, never a mode — it makes détends quieter</li>
+    <li><span>Glass</span> refraction, dispersion and Fresnel, in linear light</li>
+    <li><span>Motion</span> closed-form springs, interruptible, frame-rate independent</li>
+    <li><span>Native</span> audio kernels in C, C++ and aarch64 assembly</li>
+  </ul>
+  <p class="note">
+    Music and Mail render their real layouts; their provider integrations, the
+    Studio editors and the Wayland compositor are still ahead.
+  </p>
+</section>
+
+<footer>
+  <p>détends — Hydrogen 1.1.0. Releases are named for the elements, in order.</p>
+  <p class="quiet">Built in Rust and WGSL. Set in Inter.</p>
+</footer>
+
+</main>
+
+<script src="main.js"></script>
+</body>
+</html>

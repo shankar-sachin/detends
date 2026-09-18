@@ -11,7 +11,8 @@
 
 use crate::system::{Focus, System};
 use detends_paint::{
-    space, text, Align, Color, Frame, Glass, Id, Item, Layer, Palette, Primitive, Rect, Text, Vec2,
+    space, text, Align, Color, Frame, Glass, Icon, IconShape, Id, Item, Layer, Palette, Primitive,
+    Rect, Text, Vec2, ICON_STROKE,
 };
 use detends_time::TimeOfDay;
 
@@ -47,10 +48,22 @@ pub fn draw(
     // the specification's, and it runs from "state you chose" to "state the
     // machine is in".
     let mut segments: Vec<String> = Vec::with_capacity(5);
+    // The Focus readout and the Airplane mark are drawn as icons rather than
+    // typed: Inter has neither ◎ nor ✈, so writing them renders blank boxes.
+    // More than one of these can be true at once — a Focus session during a
+    // flight is the obvious case — so they are a row, not a slot. An earlier
+    // version kept one and silently dropped the other, leaving the readout
+    // belonging to a state the cluster no longer showed.
+    let mut leading: Vec<IconShape> = Vec::with_capacity(2);
     if let Some(focus) = focus {
-        segments.push(format!("◎ {}", focus.readout(now)));
+        leading.push(IconShape::Focus);
+        segments.push(focus.readout(now));
     }
     for indicator in system.indicators() {
+        if indicator == "✈︎" {
+            leading.push(IconShape::Airplane);
+            continue;
+        }
         segments.push(indicator.to_string());
     }
     segments.push(format!("{}%", system.battery.percent()));
@@ -60,8 +73,19 @@ pub fn draw(
 
     // Sized from the text rather than a fixed width, so the cluster contracts
     // under Airplane Mode instead of leaving a gap where the radios were.
-    let width = label.chars().count() as f32 * style.size * 0.56 + space::ROOM * 2.0;
+    let mut width = label.chars().count() as f32 * style.size * 0.56 + space::ROOM * 2.0;
     let height = style.size + space::STEP * 1.5;
+    let glyph = height * 0.52;
+    let pad = space::ROOM * 0.9;
+    // Width the icons actually occupy, padding included, so the text can start
+    // where they end rather than where an approximation says they do.
+    let leading_width = if leading.is_empty() {
+        0.0
+    } else {
+        let count = leading.len() as f32;
+        pad + count * glyph + (count - 1.0) * space::SNUG + space::SNUG
+    };
+    width += leading_width;
 
     let bounds = Rect::from_min_size(
         Vec2 {
@@ -96,13 +120,49 @@ pub fn draw(
         .opacity(opacity),
     );
 
+    for (index, shape) in leading.iter().enumerate() {
+        frame.push(
+            Item::new(
+                Id::of("status-leading").nth(index as u64),
+                Layer::Content,
+                Primitive::Icon(Icon {
+                    rect: Rect::from_center_size(
+                        Vec2 {
+                            x: bounds.min().x
+                                + pad
+                                + glyph * 0.5
+                                + index as f32 * (glyph + space::SNUG),
+                            y: bounds.center.y,
+                        },
+                        Vec2::splat(glyph),
+                    ),
+                    shape: *shape,
+                    stroke: ICON_STROKE * 1.15,
+                    color: palette.text_soft,
+                    rim: 0.4,
+                }),
+            )
+            .opacity(opacity)
+            .z(2),
+        );
+    }
+
+    let text_rect = if leading.is_empty() {
+        bounds
+    } else {
+        Rect::from_min_size(
+            Vec2 { x: bounds.min().x + leading_width, y: bounds.min().y },
+            Vec2 { x: bounds.width() - leading_width, y: bounds.height() },
+        )
+    };
+
     frame.push(
         Item::new(
             CLUSTER,
             Layer::Content,
             Primitive::Text(Text {
                 text: label.into(),
-                rect: bounds,
+                rect: text_rect,
                 size: style.size,
                 weight: style.weight,
                 tracking: style.tracking,
@@ -185,6 +245,17 @@ mod tests {
             .expect("the cluster should have a label")
     }
 
+    fn icons(frame: &Frame) -> Vec<IconShape> {
+        frame
+            .items
+            .iter()
+            .filter_map(|i| match &i.primitive {
+                Primitive::Icon(icon) => Some(icon.shape),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn render(system: &System, focus: Option<&Focus>) -> Frame {
         let mut frame = Frame::new(vec2(1512.0, 982.0), 2.0);
         let time = clock_at(17, 14).now();
@@ -237,7 +308,13 @@ mod tests {
             narrow < wide,
             "airplane cluster is {narrow}, normal is {wide}"
         );
-        assert!(cluster_text(&render(&system, None)).contains("✈︎"));
+        // Drawn, not typed: Inter has no ✈, so a glyph would be a blank box.
+        let frame = render(&system, None);
+        assert!(icons(&frame).contains(&IconShape::Airplane), "no airplane mark");
+        assert!(
+            !cluster_text(&frame).contains('✈'),
+            "the cluster is still trying to type a glyph the font lacks"
+        );
     }
 
     #[test]
@@ -248,11 +325,55 @@ mod tests {
             Some("Physics homework".into()),
             Some(42.0 * 60.0 + 18.0),
         );
-        let label = cluster_text(&render(&System::default(), Some(&focus)));
+        let frame = render(&System::default(), Some(&focus));
+        let label = cluster_text(&frame);
 
-        assert!(label.starts_with("◎ 42:18"), "got {label:?}");
+        assert!(label.starts_with("42:18"), "got {label:?}");
+        // The ring beside it is an icon, because ◎ is not in the font either.
+        assert!(icons(&frame).contains(&IconShape::Focus), "no focus ring");
         // Focus does not push anything else out.
         assert!(label.contains("5:14"));
+    }
+
+    #[test]
+    fn focus_and_airplane_can_both_be_shown_at_once() {
+        // Both are persistent states and both can be true — a Focus session on
+        // a flight. Keeping only one leaves the readout describing a state the
+        // cluster is no longer showing.
+        let mut system = System::default();
+        system.set_airplane(true);
+        let focus = Focus::begin(0.0, None, Some(42.0 * 60.0 + 18.0));
+
+        let frame = render(&system, Some(&focus));
+        let shown = icons(&frame);
+        assert!(shown.contains(&IconShape::Focus), "the focus ring vanished");
+        assert!(shown.contains(&IconShape::Airplane), "the airplane vanished");
+        assert!(cluster_text(&frame).starts_with("42:18"));
+    }
+
+    #[test]
+    fn the_leading_icons_never_sit_on_top_of_the_text() {
+        let mut system = System::default();
+        system.set_airplane(true);
+        let focus = Focus::begin(0.0, None, Some(600.0));
+        let frame = render(&system, Some(&focus));
+
+        let label = frame
+            .items
+            .iter()
+            .find(|i| i.id == CLUSTER)
+            .expect("label")
+            .primitive
+            .bounds();
+
+        for item in frame.items.iter() {
+            if let Primitive::Icon(_) = &item.primitive {
+                assert!(
+                    item.primitive.bounds().max().x <= label.min().x + 0.5,
+                    "an icon overlaps the readout"
+                );
+            }
+        }
     }
 
     #[test]

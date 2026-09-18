@@ -8,7 +8,7 @@
 //! movement reads as one workspace changing state rather than two screens
 //! swapping.
 
-use detends_paint::{springs, Seconds, Spring};
+use detends_paint::{springs, IconShape, Seconds, Spring};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Mode {
@@ -27,6 +27,17 @@ impl Mode {
         Mode::Studio,
         Mode::Files,
     ];
+
+    /// The icon that stands for this place on Home.
+    pub fn icon(self) -> IconShape {
+        match self {
+            Mode::Music => IconShape::Music,
+            Mode::Clock => IconShape::Clock,
+            Mode::Mail => IconShape::Mail,
+            Mode::Studio => IconShape::Studio,
+            Mode::Files => IconShape::Files,
+        }
+    }
 
     /// The name as it appears in the interface.
     pub fn name(self) -> &'static str {
@@ -69,17 +80,52 @@ impl Mode {
     }
 }
 
-/// Tracks which mode owns the workspace, and the movement between them.
+/// Where the workspace is.
+///
+/// Home is not a sixth mode — it is the root you land on and return to, and the
+/// only place that shows you where you can go. Without it the five places are
+/// reachable only by keystrokes nobody told you about, which is how a system
+/// ends up looking like it does nothing at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Destination {
+    Home,
+    Mode(Mode),
+}
+
+impl Destination {
+    pub fn name(self) -> &'static str {
+        match self {
+            Destination::Home => "détends",
+            Destination::Mode(mode) => mode.name(),
+        }
+    }
+
+    pub fn mode(self) -> Option<Mode> {
+        match self {
+            Destination::Home => None,
+            Destination::Mode(mode) => Some(mode),
+        }
+    }
+}
+
+impl From<Mode> for Destination {
+    fn from(mode: Mode) -> Self {
+        Destination::Mode(mode)
+    }
+}
+
+/// Tracks what owns the workspace, and the movement between destinations.
 pub struct Navigator {
-    current: Mode,
-    /// The mode being left, still visible while it recedes.
-    previous: Option<Mode>,
+    current: Destination,
+    /// What is being left, still visible while it recedes.
+    previous: Option<Destination>,
     /// 0 when the incoming mode has fully arrived, 1 the moment it starts.
     transition: Spring<f32>,
 }
 
 impl Navigator {
-    pub fn new(start: Mode) -> Self {
+    pub fn new(start: impl Into<Destination>) -> Self {
+        let start = start.into();
         Self {
             current: start,
             previous: None,
@@ -87,17 +133,22 @@ impl Navigator {
         }
     }
 
-    pub fn current(&self) -> Mode {
+    pub fn current(&self) -> Destination {
         self.current
     }
 
-    pub fn previous(&self) -> Option<Mode> {
+    pub fn previous(&self) -> Option<Destination> {
         self.previous
     }
 
-    /// Go to a mode. Selecting the current mode does nothing at all — no
+    pub fn at_home(&self) -> bool {
+        self.current == Destination::Home
+    }
+
+    /// Go somewhere. Selecting where you already are does nothing at all — no
     /// flicker, no restart.
-    pub fn go(&mut self, now: Seconds, mode: Mode) {
+    pub fn go(&mut self, now: Seconds, to: impl Into<Destination>) {
+        let mode = to.into();
         if mode == self.current {
             return;
         }
@@ -240,8 +291,8 @@ mod tests {
         nav.go(0.1, Mode::Files);
         // Redirecting resets the transition to its start, but the mode being
         // left is now Clock — the movement continues from where it was.
-        assert_eq!(nav.current(), Mode::Files);
-        assert_eq!(nav.previous(), Some(Mode::Clock));
+        assert_eq!(nav.current(), Destination::Mode(Mode::Files));
+        assert_eq!(nav.previous(), Some(Destination::Mode(Mode::Clock)));
         assert!(midway > 0.0 && midway < 1.0, "should have been mid-flight");
     }
 

@@ -37,6 +37,10 @@ struct Options {
     airplane: bool,
     /// Report the frame rate periodically.
     fps: bool,
+    /// Render the whole icon set as a sheet instead of the shell.
+    icons: bool,
+    /// Which of Clock's utilities to open, and some state to show in it.
+    section: Option<String>,
 }
 
 fn options() -> Options {
@@ -65,6 +69,8 @@ fn options() -> Options {
         focus: flag("--focus"),
         airplane: flag("--airplane"),
         fps: flag("--fps"),
+        icons: flag("--icons"),
+        section: value("--section"),
     }
 }
 
@@ -90,6 +96,8 @@ struct App {
     pointer: (f32, f32),
     /// When the frame rate was last reported.
     last_report: f64,
+    /// Whether the window has been revealed yet.
+    shown: bool,
 }
 
 impl App {
@@ -103,6 +111,7 @@ impl App {
             modifiers: input::Modifiers::default(),
             pointer: (0.0, 0.0),
             last_report: 0.0,
+            shown: false,
         }
     }
 
@@ -125,6 +134,12 @@ impl ApplicationHandler for App {
         let mut attributes = Window::default_attributes()
             .with_title("détends")
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0));
+
+        // Stay hidden until there is something to show. wgpu initialisation,
+        // font loading and the blue-noise tile take long enough that an
+        // immediately-visible window means an empty frame on screen first, and
+        // the boot sequence appears not to happen at all.
+        attributes = attributes.with_visible(false);
 
         if self.options.capture.is_some() {
             // A capture still needs a surface for the swapchain, but it should
@@ -162,6 +177,15 @@ impl ApplicationHandler for App {
         let mut shell = Shell::new(now, vec2(w, h), window.scale_factor() as f32);
         shell.set_appearance(Appearance::Automatic, prefers_dark(&window));
 
+        // Timers and alarms set before quitting are still set afterwards.
+        // Captures are deliberately excluded: a screenshot should not adopt —
+        // or overwrite — whatever the real system has running.
+        if self.options.capture.is_none() {
+            if let Some(path) = detends_time::store::default_path() {
+                shell.load_schedule(path);
+            }
+        }
+
         // The logo. Boot falls back to a typographic mark if either file is
         // missing, so a broken asset costs the artwork rather than the boot.
         let mut renderer = renderer;
@@ -185,6 +209,11 @@ impl ApplicationHandler for App {
         self.window = Some(window.clone());
 
         if let Some(path) = self.options.capture.clone() {
+            if self.options.icons {
+                self.capture_icons(&path);
+                event_loop.exit();
+                return;
+            }
             self.capture(&path);
             event_loop.exit();
             return;
@@ -203,7 +232,10 @@ impl ApplicationHandler for App {
         };
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                shell.save_schedule();
+                event_loop.exit()
+            }
 
             WindowEvent::Resized(size) => {
                 renderer.resize(size.width, size.height);
@@ -244,12 +276,10 @@ impl ApplicationHandler for App {
                 let key = input::from_winit(&event.logical_key);
                 let pressed = event.state == ElementState::Pressed;
 
-                // A fullscreen shell must always have a way out.
-                if pressed && matches!(key, input::Key::Escape) {
-                    event_loop.exit();
-                    return;
-                }
-
+                // Escape belongs to the shell, where it backs out one step and
+                // lands Home. Quitting is Cmd+Q or closing the window — an
+                // Escape that exits the system can never dismiss anything, and
+                // makes every surface a trap.
                 let now = self.clock.now();
                 let modifiers = self.modifiers;
                 shell.input(
@@ -293,6 +323,7 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 let now = self.clock.tick();
+                let first_frame = !self.shown;
                 let out = shell.tick(now);
                 let animating = out.frame.animating;
                 let env = environment(out.environment, now);
@@ -301,6 +332,13 @@ impl ApplicationHandler for App {
                 // the frame rather than discovering it.
                 window.pre_present_notify();
                 renderer.draw(out.frame, env);
+
+                // Reveal only once a real frame has been presented, so the
+                // first thing on screen is the mark rather than nothing.
+                if first_frame {
+                    self.shown = true;
+                    window.set_visible(true);
+                }
 
                 // Perceived performance is a feature (§21), so it should be
                 // measurable without a profiler attached.
@@ -374,6 +412,22 @@ impl App {
             shell.begin_focus(t, Some("Physics homework".into()), Some(42.0 * 60.0 + 18.0));
         }
 
+        if let Some(section) = self.options.section.clone() {
+            use detends_shell::Section;
+            let chosen = match section.to_lowercase().as_str() {
+                "timers" | "timer" => Some(Section::Timers),
+                "alarms" | "alarm" => Some(Section::Alarms),
+                "stopwatch" => Some(Section::Stopwatch),
+                "world" => Some(Section::World),
+                _ => None,
+            };
+            if let Some(chosen) = chosen {
+                shell.populate_clock_for_capture(t, chosen);
+            } else {
+                log::warn!("no clock section called {section:?}");
+            }
+        }
+
         match self.options.open.as_deref() {
             Some("search") => {
                 shell.open_search(t);
@@ -411,6 +465,102 @@ impl App {
                 Ok(()) => log::info!("captured {w}×{h} at t={t:.2}s to {target}"),
                 Err(e) => log::error!("could not write {target}: {e}"),
             }
+        }
+    }
+}
+
+impl App {
+    /// Render every icon at several sizes, so the set can be judged as a set.
+    ///
+    /// An icon that works at 96px and falls apart at 24 is not finished, and
+    /// the only way to know is to look at them together.
+    fn capture_icons(&mut self, path: &str) {
+        use detends_paint::{
+            text, Align, Color, Frame, Icon, IconShape, Id, Item, Layer, Palette, Primitive, Rect,
+            Text, Vec2, ICON_STROKE,
+        };
+
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let (pw, ph) = renderer.size();
+        let scale = 2.0_f32;
+        let size = Vec2 { x: pw as f32 / scale, y: ph as f32 / scale };
+
+        let palette = Palette::dark();
+        let mut frame = Frame::new(size, scale);
+
+        // Three sizes across, every shape down: small enough to test legibility,
+        // large enough to test the curves.
+        let sizes = [26.0_f32, 48.0, 96.0];
+        let columns = 5.0_f32;
+        let cell = Vec2 { x: size.x / columns, y: 132.0 };
+        let top = 70.0;
+
+        for (index, shape) in IconShape::ALL.iter().enumerate() {
+            let col = (index % 5) as f32;
+            let row = (index / 5) as f32;
+            let origin = Vec2 {
+                x: cell.x * col + cell.x * 0.5,
+                y: top + row * cell.y,
+            };
+
+            let mut x = origin.x - 74.0;
+            for side in sizes {
+                frame.push(Item::new(
+                    Id::of("icon").nth(index as u64 * 8 + side as u64),
+                    Layer::Content,
+                    Primitive::Icon(Icon {
+                        rect: Rect::from_center_size(
+                            Vec2 { x: x + side * 0.5, y: origin.y },
+                            Vec2::splat(side),
+                        ),
+                        shape: *shape,
+                        stroke: ICON_STROKE,
+                        color: palette.text,
+                        rim: 0.55,
+                    }),
+                ));
+                x += side + 16.0;
+            }
+
+            frame.push(Item::new(
+                Id::of("icon-label").nth(index as u64),
+                Layer::Content,
+                Primitive::Text(Text {
+                    text: shape.name().to_uppercase().into(),
+                    rect: Rect::from_center_size(
+                        Vec2 { x: origin.x, y: origin.y + 62.0 },
+                        Vec2 { x: cell.x, y: 24.0 },
+                    ),
+                    size: text::CAPTION.size,
+                    weight: text::CAPTION.weight,
+                    tracking: text::CAPTION.tracking * 2.0,
+                    line_height: text::CAPTION.line_height,
+                    color: palette.text_faint,
+                    align: Align::Center,
+                }),
+            ));
+        }
+
+        frame.sort();
+
+        let env = Environment {
+            time: 0.0,
+            focus: 0.0,
+            near: palette.ground_far,
+            far: palette.ground,
+            glass_intensity: 1.0,
+            glass_transparency: 1.0,
+            presence: 1.0,
+            fade: 1.0,
+        };
+        let _ = Color::WHITE;
+
+        let pixels = renderer.capture(&frame, env);
+        match write_png(path, pw, ph, &pixels) {
+            Ok(()) => log::info!("icon sheet written to {path}"),
+            Err(e) => log::error!("could not write {path}: {e}"),
         }
     }
 }

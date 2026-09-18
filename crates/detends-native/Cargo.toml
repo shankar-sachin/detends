@@ -1,0 +1,12 @@
+[package]
+name = "detends-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CPU kernels for détends, in C, C++ and aarch64 assembly."
+
+[dependencies]
+
+[build-dependencies]
+cc = "1.2"

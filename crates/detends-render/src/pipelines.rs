@@ -82,6 +82,8 @@ impl Layouts {
                 "flat",
                 &[uniform_entry(0), texture_entry(1), sampler_entry(2)],
             ),
+            // Icons are pure mathematics — no texture, no sampler.
+            icon: make("icon", &[uniform_entry(0)]),
             present: make(
                 "present",
                 &[
@@ -184,12 +186,18 @@ impl Pipelines {
         let blit_mod = module(device, "blit", include_str!("shaders/blit.wgsl"));
         let glass_mod = module(device, "glass", include_str!("shaders/glass.wgsl"));
         let flat_mod = module(device, "flat", include_str!("shaders/flat.wgsl"));
+        let icon_mod = module(device, "icon", include_str!("shaders/icon.wgsl"));
         let present_mod = module(device, "present", include_str!("shaders/present.wgsl"));
 
         let glass_buffer = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<GlassInstance>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &GlassInstance::LAYOUT,
+        };
+        let icon_buffer = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<IconInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &IconInstance::LAYOUT,
         };
         let flat_buffer = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<FlatInstance>() as u64,
@@ -263,6 +271,17 @@ impl Pipelines {
                 WORKING_FORMAT,
                 premultiplied(),
                 &[Some(flat_buffer)],
+            ),
+            icon: pipeline(
+                device,
+                "icon",
+                &layouts.icon,
+                &icon_mod,
+                "vs_main",
+                "fs_main",
+                WORKING_FORMAT,
+                premultiplied(),
+                &[Some(icon_buffer)],
             ),
             present: pipeline(
                 device,
@@ -538,6 +557,17 @@ impl Bindings {
             ],
         });
 
+        let icon = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("icon"),
+            layout: &layouts.icon,
+            // Icons reuse the flat pass's uniforms: both want resolution,
+            // scale and time, and nothing else.
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.flat.as_entire_binding(),
+            }],
+        });
+
         let present = targets
             .composite
             .iter()
@@ -574,6 +604,7 @@ impl Bindings {
             blit,
             glass,
             flat,
+            icon,
             present,
             _grain: grain_texture,
             _white: white_texture,

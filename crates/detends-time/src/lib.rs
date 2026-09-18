@@ -10,6 +10,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod alarm;
 pub mod clock;
+pub mod schedule;
+pub mod stopwatch;
+pub mod store;
+pub mod timer;
 
+pub use alarm::{Alarm, AlarmId, Repeat};
 pub use clock::{Clock, TimeOfDay};
+pub use schedule::{Fired, Schedule, WorldClock};
+pub use stopwatch::Stopwatch;
+pub use timer::{format_duration, Timer, TimerId, TimerState};

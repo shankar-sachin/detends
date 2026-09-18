@@ -206,6 +206,7 @@ pub enum Primitive {
     Fill(Fill),
     Text(Text),
     Image(Image),
+    Icon(Icon),
 }
 
 impl Primitive {
@@ -215,6 +216,7 @@ impl Primitive {
             Primitive::Fill(f) => f.rect,
             Primitive::Text(t) => t.rect,
             Primitive::Image(i) => i.rect,
+            Primitive::Icon(i) => i.rect,
         }
     }
 }
@@ -451,5 +453,118 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(t.text, Cow::Borrowed(_)));
+    }
+}
+
+/// One of the drawn icons.
+///
+/// Icons are signed-distance shapes evaluated in the shader rather than glyphs
+/// from a font. Inter — like most text faces — has almost no symbol coverage:
+/// `✈`, `◎`, `✉` and `◷` are all absent, so an interface that typed its icons
+/// would silently render blank boxes. Drawing them also means they are crisp at
+/// any size, tintable, animatable, and able to carry the same rim highlight as
+/// the glass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum IconShape {
+    // The five places.
+    Music = 0,
+    Clock = 1,
+    Mail = 2,
+    Studio = 3,
+    Files = 4,
+
+    // System states, replacing glyphs the font does not have.
+    Airplane = 5,
+    Focus = 6,
+
+    // Transport.
+    Play = 7,
+    Pause = 8,
+    Previous = 9,
+    Next = 10,
+
+    // Clock's own utilities.
+    Timer = 11,
+    Alarm = 12,
+    Stopwatch = 13,
+    Globe = 14,
+}
+
+impl IconShape {
+    pub const ALL: [IconShape; 15] = [
+        IconShape::Music,
+        IconShape::Clock,
+        IconShape::Mail,
+        IconShape::Studio,
+        IconShape::Files,
+        IconShape::Airplane,
+        IconShape::Focus,
+        IconShape::Play,
+        IconShape::Pause,
+        IconShape::Previous,
+        IconShape::Next,
+        IconShape::Timer,
+        IconShape::Alarm,
+        IconShape::Stopwatch,
+        IconShape::Globe,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            IconShape::Music => "Music",
+            IconShape::Clock => "Clock",
+            IconShape::Mail => "Mail",
+            IconShape::Studio => "Studio",
+            IconShape::Files => "Files",
+            IconShape::Airplane => "Airplane",
+            IconShape::Focus => "Focus",
+            IconShape::Play => "Play",
+            IconShape::Pause => "Pause",
+            IconShape::Previous => "Previous",
+            IconShape::Next => "Next",
+            IconShape::Timer => "Timer",
+            IconShape::Alarm => "Alarm",
+            IconShape::Stopwatch => "Stopwatch",
+            IconShape::Globe => "Globe",
+        }
+    }
+}
+
+/// A drawn icon.
+#[derive(Clone, Copy, Debug)]
+pub struct Icon {
+    /// The square the icon is drawn inside. Non-square rectangles are centred
+    /// on the shorter axis rather than stretched — an icon set with drifting
+    /// proportions is the clearest sign of a careless one.
+    pub rect: Rect,
+    pub shape: IconShape,
+    /// Stroke weight as a fraction of the icon's size.
+    ///
+    /// Held constant across the whole set: one weight is what makes a set of
+    /// icons read as designed together rather than merely collected.
+    pub stroke: f32,
+    pub color: Color,
+    /// How much of the glass rim highlight the stroke catches, 0 to 1. Enough
+    /// that the icon reads as bent glass; not so much that it competes with
+    /// the panes.
+    pub rim: f32,
+}
+
+/// The stroke weight the whole set is drawn at, as a fraction of icon size.
+///
+/// 1.7 units on the 24-unit grid. Two units — the obvious choice — reads heavy
+/// once an icon is large, which is at odds with glass letterforms this thin.
+pub const ICON_STROKE: f32 = 1.7 / 24.0;
+
+impl Default for Icon {
+    fn default() -> Self {
+        Self {
+            rect: Rect::ZERO,
+            shape: IconShape::Music,
+            stroke: ICON_STROKE,
+            color: Color::WHITE,
+            rim: 0.5,
+        }
     }
 }

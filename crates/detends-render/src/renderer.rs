@@ -69,11 +69,13 @@ pub struct Renderer {
     uniforms: Uniforms,
     glass_instances: InstanceBuffer,
     flat_instances: InstanceBuffer,
+    icon_instances: InstanceBuffer,
     text: TextStack,
     textures: Textures,
     // Scratch, reused every frame so steady-state rendering allocates nothing.
     glass_scratch: Vec<GlassInstance>,
     flat_scratch: Vec<FlatInstance>,
+    icon_scratch: Vec<IconInstance>,
     /// One entry per layer, describing which slice of the instance buffers
     /// that layer draws.
     batches: Vec<LayerBatch>,
@@ -89,6 +91,7 @@ pub(crate) struct Pipelines {
     pub(crate) blit: wgpu::RenderPipeline,
     pub(crate) glass: wgpu::RenderPipeline,
     pub(crate) flat: wgpu::RenderPipeline,
+    pub(crate) icon: wgpu::RenderPipeline,
     pub(crate) present: wgpu::RenderPipeline,
     /// The same present pass, targeting an 8-bit offscreen texture.
     pub(crate) present_capture: wgpu::RenderPipeline,
@@ -100,6 +103,7 @@ pub(crate) struct Layouts {
     pub(crate) blit: wgpu::BindGroupLayout,
     pub(crate) glass: wgpu::BindGroupLayout,
     pub(crate) flat: wgpu::BindGroupLayout,
+    pub(crate) icon: wgpu::BindGroupLayout,
     pub(crate) present: wgpu::BindGroupLayout,
 }
 
@@ -131,6 +135,7 @@ pub(crate) struct Bindings {
     /// Glass backdrop, indexed the same way.
     pub(crate) glass: Vec<wgpu::BindGroup>,
     pub(crate) flat: wgpu::BindGroup,
+    pub(crate) icon: wgpu::BindGroup,
     /// Present source, one per composite.
     pub(crate) present: Vec<wgpu::BindGroup>,
     pub(crate) _grain: wgpu::Texture,
@@ -149,6 +154,7 @@ pub(crate) struct Bindings {
 #[derive(Default, Clone)]
 struct LayerBatch {
     glass: (u32, u32),
+    icon: (u32, u32),
     /// Contiguous runs sharing one texture, so each becomes a single draw.
     flat: Vec<(Option<TextureId>, u32, u32)>,
 }
@@ -200,6 +206,12 @@ impl Renderer {
                 std::mem::size_of::<FlatInstance>(),
                 64,
             ),
+            icon_instances: InstanceBuffer::new(
+                &gpu.device,
+                "icon-instances",
+                std::mem::size_of::<IconInstance>(),
+                32,
+            ),
             gpu,
             targets,
             bindings,
@@ -209,6 +221,7 @@ impl Renderer {
             textures: Textures::new(),
             glass_scratch: Vec::with_capacity(64),
             flat_scratch: Vec::with_capacity(64),
+            icon_scratch: Vec::with_capacity(32),
             batches: vec![LayerBatch::default(); Layer::ALL.len()],
             flat_layout: layouts.flat,
             sampler,
@@ -437,6 +450,7 @@ impl Renderer {
             frame,
             &mut self.glass_scratch,
             &mut self.flat_scratch,
+            &mut self.icon_scratch,
             &mut self.batches,
             |id| textures.get(id).is_some(),
         );
@@ -445,6 +459,8 @@ impl Renderer {
             .upload(&self.gpu.device, &self.gpu.queue, &self.glass_scratch);
         self.flat_instances
             .upload(&self.gpu.device, &self.gpu.queue, &self.flat_scratch);
+        self.icon_instances
+            .upload(&self.gpu.device, &self.gpu.queue, &self.icon_scratch);
     }
 
     fn pass_layer(
@@ -497,6 +513,14 @@ impl Renderer {
                 pass.set_bind_group(0, bind, &[]);
                 pass.draw(0..6, *start..*end);
             }
+        }
+
+        let (icon_start, icon_end) = batch.icon;
+        if icon_end > icon_start {
+            pass.set_pipeline(&self.pipelines.icon);
+            pass.set_bind_group(0, &self.bindings.icon, &[]);
+            pass.set_vertex_buffer(0, self.icon_instances.slice());
+            pass.draw(0..6, icon_start..icon_end);
         }
 
         // Text shares this pass rather than opening its own. On a tile-based
@@ -681,11 +705,13 @@ fn build_batches(
     frame: &Frame,
     glass: &mut Vec<GlassInstance>,
     flat: &mut Vec<FlatInstance>,
+    icons: &mut Vec<IconInstance>,
     batches: &mut [LayerBatch],
     texture_exists: impl Fn(TextureId) -> bool,
 ) {
     glass.clear();
     flat.clear();
+    icons.clear();
 
     for (index, layer) in Layer::ALL.iter().enumerate() {
         let batch = &mut batches[index];
@@ -693,15 +719,18 @@ fn build_batches(
 
         let glass_start = glass.len() as u32;
         let flat_start = flat.len() as u32;
+        let icon_start = icons.len() as u32;
 
         for item in frame.items.iter().filter(|i| i.layer == *layer) {
             match &item.primitive {
                 Primitive::Glass(g) => glass.push(GlassInstance::from_paint(g, item.opacity)),
                 Primitive::Fill(f) => flat.push(FlatInstance::from_fill(f, item.opacity)),
+                Primitive::Icon(i) => icons.push(IconInstance::from_paint(i, item.opacity)),
                 Primitive::Text(_) | Primitive::Image(_) => {}
             }
         }
         batch.glass = (glass_start, glass.len() as u32);
+        batch.icon = (icon_start, icons.len() as u32);
 
         // Fills first, under no texture at all; then images, one run each, so
         // every run is a single instanced draw.
@@ -765,8 +794,9 @@ mod tests {
     fn run(frame: &Frame) -> (Vec<GlassInstance>, Vec<FlatInstance>, Vec<LayerBatch>) {
         let mut glass = Vec::new();
         let mut flat = Vec::new();
+        let mut icons = Vec::new();
         let mut batches = vec![LayerBatch::default(); Layer::ALL.len()];
-        build_batches(frame, &mut glass, &mut flat, &mut batches, |_| true);
+        build_batches(frame, &mut glass, &mut flat, &mut icons, &mut batches, |_| true);
         (glass, flat, batches)
     }
 
@@ -879,7 +909,8 @@ mod tests {
         let mut glass = Vec::new();
         let mut flat = Vec::new();
         let mut batches = vec![LayerBatch::default(); Layer::ALL.len()];
-        build_batches(&frame, &mut glass, &mut flat, &mut batches, |_| false);
+        let mut icons = Vec::new();
+        build_batches(&frame, &mut glass, &mut flat, &mut icons, &mut batches, |_| false);
 
         assert!(flat.is_empty());
         assert!(batches[Layer::Content as usize].flat.is_empty());
@@ -890,9 +921,10 @@ mod tests {
         let frame = frame_with(vec![Item::new(Id(1), Layer::Content, glass_at(0.0))]);
         let mut glass = Vec::new();
         let mut flat = Vec::new();
+        let mut icons = Vec::new();
         let mut batches = vec![LayerBatch::default(); Layer::ALL.len()];
         for _ in 0..3 {
-            build_batches(&frame, &mut glass, &mut flat, &mut batches, |_| true);
+            build_batches(&frame, &mut glass, &mut flat, &mut icons, &mut batches, |_| true);
         }
         assert_eq!(glass.len(), 1, "instances accumulated across frames");
     }

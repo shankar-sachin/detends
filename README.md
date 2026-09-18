@@ -1,9 +1,12 @@
-# détends
+# détends — Hydrogen
 
 An operating system shell built on **Five places. One System Center. One Search.
 One thing at a time.**
 
-Milestones 1 and 2 of the [specification](docs/): the complete interaction
+Releases are named for the elements, in order. This is **Hydrogen** (v1.x);
+Helium is next.
+
+Milestones 1 and 2 of the [specification](documentation/): the complete interaction
 language, a custom optical-glass renderer, and the beginnings of Clock.
 
 ## Running it
@@ -37,11 +40,11 @@ layout — the point of Milestone 1 is the interaction language, not the data.
 
 ## Reading order
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the crates and the compositor seam
-- [`docs/GLASS.md`](docs/GLASS.md) — the material, and why it is not a blur
-- [`docs/MOTION.md`](docs/MOTION.md) — the four springs
-- [`docs/KEYMAP.md`](docs/KEYMAP.md) — the keyboard
-- [`docs/PROVIDERS.md`](docs/PROVIDERS.md) — Music and Mail account decisions
+- [`documentation/ARCHITECTURE.md`](documentation/ARCHITECTURE.md) — the crates and the compositor seam
+- [`documentation/GLASS.md`](documentation/GLASS.md) — the material, and why it is not a blur
+- [`documentation/MOTION.md`](documentation/MOTION.md) — the four springs
+- [`documentation/KEYMAP.md`](documentation/KEYMAP.md) — the keyboard
+- [`documentation/PROVIDERS.md`](documentation/PROVIDERS.md) — Music and Mail account decisions
 
 ## Not yet
 
