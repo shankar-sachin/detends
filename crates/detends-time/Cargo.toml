@@ -1,0 +1,11 @@
+[package]
+name = "detends-time"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Clock, World Clock, Alarms, Timers and Stopwatch."
+
+[dependencies]
+jiff = { workspace = true }
+serde = { workspace = true }

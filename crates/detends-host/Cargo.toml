@@ -1,0 +1,21 @@
+[package]
+name = "detends-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Runs the détends shell as a desktop application."
+
+[[bin]]
+name = "detends"
+path = "src/main.rs"
+
+[dependencies]
+detends-paint = { workspace = true }
+detends-render = { workspace = true }
+detends-shell = { workspace = true }
+winit = { workspace = true }
+pollster = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+png = "0.18"

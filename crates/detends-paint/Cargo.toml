@@ -1,0 +1,10 @@
+[package]
+name = "detends-paint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "What a détends frame is: geometry, colour, and the display list."
+
+[dependencies]
+detends-motion = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "detends-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The détends optical-glass renderer."
+
+[dependencies]
+detends-paint = { workspace = true }
+wgpu = { workspace = true }
+glyphon = { workspace = true }
+bytemuck = { workspace = true }
+log = { workspace = true }
