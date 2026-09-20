@@ -33,6 +33,7 @@ fn main() {
             .file("native/mix_neon.asm")
             .file("native/convert_neon.asm")
             .file("native/analyse_neon.asm")
+            .file("native/channels_neon.asm")
             .flag("-x")
             .flag("assembler-with-cpp")
             .compile("detends_asm");

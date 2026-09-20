@@ -5,7 +5,6 @@
 //! lengths handed in are the lengths passed down", which each wrapper below
 //! establishes before calling.
 
-#![allow(unsafe_code)]
 
 use std::ffi::c_void;
 
@@ -18,6 +17,25 @@ unsafe extern "C" {
 
     #[cfg(detends_neon)]
     fn detends_analyse(src: *const f32, n: usize, peak: *mut f32, energy: *mut f32);
+
+    #[cfg(detends_neon)]
+    fn detends_i16_to_f32(dst: *mut f32, src: *const i16, n: usize);
+
+    #[cfg(detends_neon)]
+    fn detends_deinterleave_stereo(
+        left: *mut f32,
+        right: *mut f32,
+        src: *const f32,
+        frames: usize,
+    );
+
+    #[cfg(detends_neon)]
+    fn detends_interleave_stereo(
+        dst: *mut f32,
+        left: *const f32,
+        right: *const f32,
+        frames: usize,
+    );
 
     fn detends_resample_cubic(
         dst: *mut f32,
@@ -81,6 +99,49 @@ pub fn analyse(src: &[f32]) -> (f32, f32) {
     // SAFETY: `src` is valid for its own length; the two outputs are local.
     unsafe { detends_analyse(src.as_ptr(), src.len(), &mut peak, &mut energy) }
     (peak, energy)
+}
+
+/// Sixteen-bit integers to float samples.
+#[cfg(detends_neon)]
+pub fn i16_to_f32(dst: &mut [f32], src: &[i16]) {
+    let n = dst.len().min(src.len());
+    if n == 0 {
+        return;
+    }
+    // SAFETY: `n` is within both slices, so neither pointer is advanced past
+    // its own allocation.
+    unsafe { detends_i16_to_f32(dst.as_mut_ptr(), src.as_ptr(), n) }
+}
+
+/// Interleaved stereo into two planar buffers.
+#[cfg(detends_neon)]
+pub fn deinterleave_stereo(left: &mut [f32], right: &mut [f32], src: &[f32]) {
+    // Frames, not samples: the source holds two floats for every frame, so the
+    // bound it imposes is half its length.
+    let frames = left.len().min(right.len()).min(src.len() / 2);
+    if frames == 0 {
+        return;
+    }
+    // SAFETY: the kernel writes `frames` floats to each output and reads
+    // `frames * 2` from the input, all of which the bound above establishes.
+    // `left` and `right` are distinct slices, so the two writes cannot alias.
+    unsafe {
+        detends_deinterleave_stereo(left.as_mut_ptr(), right.as_mut_ptr(), src.as_ptr(), frames)
+    }
+}
+
+/// Two planar buffers into interleaved stereo.
+#[cfg(detends_neon)]
+pub fn interleave_stereo(dst: &mut [f32], left: &[f32], right: &[f32]) {
+    let frames = left.len().min(right.len()).min(dst.len() / 2);
+    if frames == 0 {
+        return;
+    }
+    // SAFETY: as above, with the roles reversed — `frames * 2` floats written
+    // to `dst`, `frames` read from each input.
+    unsafe {
+        detends_interleave_stereo(dst.as_mut_ptr(), left.as_ptr(), right.as_ptr(), frames)
+    }
 }
 
 /// Resample, returning how many frames were written.

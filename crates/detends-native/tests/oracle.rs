@@ -188,9 +188,9 @@ fn resampling_a_ramp_stays_a_ramp() {
     let mut dst = vec![0.0_f32; 128];
     let frames = native::resample_cubic(&mut dst, &src, 1, 0.5);
 
-    for i in 4..frames - 4 {
+    for (i, got) in dst.iter().enumerate().take(frames - 4).skip(4) {
         let want = i as f32 * 0.5;
-        assert!((dst[i] - want).abs() < 1e-3, "frame {i}: {} vs {want}", dst[i]);
+        assert!((got - want).abs() < 1e-3, "frame {i}: {got} vs {want}");
     }
 }
 
@@ -338,4 +338,118 @@ fn the_backend_reports_itself_honestly() {
 
     #[cfg(target_arch = "aarch64")]
     assert!(native::accelerated(), "the assembly should be in use here");
+}
+
+// ---- the channel and decode kernels ------------------------------------
+//
+// These have their own awkward case on top of the usual ones: LD2 and ST2 move
+// four *frames* at a time, so the tail is measured in frames rather than
+// samples and a buffer with an odd number of floats in it must not tempt the
+// kernel into reading one past the end.
+
+#[test]
+fn i16_to_f32_matches_the_portable_version_at_every_awkward_length() {
+    for n in AWKWARD {
+        // The full range, including both endpoints, which is where a wrong
+        // scale factor shows up first.
+        let src: Vec<i16> = (0..n)
+            .map(|i| match i % 5 {
+                0 => i16::MIN,
+                1 => i16::MAX,
+                2 => 0,
+                3 => -1,
+                _ => (i as i32 * 977 % 32768) as i16,
+            })
+            .collect();
+
+        let mut fast = vec![0.0_f32; n];
+        let mut slow = vec![0.0_f32; n];
+        native::i16_to_f32(&mut fast, &src);
+        portable::i16_to_f32(&mut slow, &src);
+
+        assert_eq!(fast, slow, "n = {n}");
+    }
+}
+
+#[test]
+fn the_most_negative_sample_lands_exactly_on_minus_one() {
+    // The reason the scale is 32768 and not 32767. Exact, not approximate.
+    let mut out = [0.0_f32; 2];
+    native::i16_to_f32(&mut out, &[i16::MIN, 16384]);
+    assert_eq!(out, [-1.0, 0.5]);
+}
+
+#[test]
+fn deinterleaving_matches_the_portable_version() {
+    for frames in AWKWARD {
+        let src = samples(frames * 2, 0x51DE);
+
+        let (mut fl, mut fr) = (vec![0.0; frames], vec![0.0; frames]);
+        let (mut sl, mut sr) = (vec![0.0; frames], vec![0.0; frames]);
+
+        native::deinterleave_stereo(&mut fl, &mut fr, &src);
+        portable::deinterleave_stereo(&mut sl, &mut sr, &src);
+
+        assert_eq!(fl, sl, "left, {frames} frames");
+        assert_eq!(fr, sr, "right, {frames} frames");
+    }
+}
+
+#[test]
+fn interleaving_matches_the_portable_version() {
+    for frames in AWKWARD {
+        let left = samples(frames, 0xA11);
+        let right = samples(frames, 0xB22);
+
+        let mut fast = vec![0.0; frames * 2];
+        let mut slow = vec![0.0; frames * 2];
+
+        native::interleave_stereo(&mut fast, &left, &right);
+        portable::interleave_stereo(&mut slow, &left, &right);
+
+        assert_eq!(fast, slow, "{frames} frames");
+    }
+}
+
+#[test]
+fn a_round_trip_through_planar_and_back_is_the_identity() {
+    // The property that matters in the audio path: nothing is lost or swapped
+    // on the way out to the processing and back to the device.
+    for frames in AWKWARD {
+        let original = samples(frames * 2, 0xC0FFEE);
+
+        let (mut left, mut right) = (vec![0.0; frames], vec![0.0; frames]);
+        native::deinterleave_stereo(&mut left, &mut right, &original);
+
+        let mut back = vec![0.0; frames * 2];
+        native::interleave_stereo(&mut back, &left, &right);
+
+        assert_eq!(back, original, "{frames} frames");
+    }
+}
+
+#[test]
+fn an_odd_trailing_float_is_left_alone_rather_than_read_past() {
+    // Seven floats is three whole frames and a stray. The kernel must convert
+    // three frames and stop, rather than reading an eighth float that is not
+    // there.
+    let src = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+    let (mut left, mut right) = (vec![0.0; 4], vec![0.0; 4]);
+
+    native::deinterleave_stereo(&mut left, &mut right, &src);
+
+    assert_eq!(left, vec![1.0, 3.0, 5.0, 0.0]);
+    assert_eq!(right, vec![2.0, 4.0, 6.0, 0.0]);
+}
+
+#[test]
+fn the_shorter_buffer_bounds_the_work() {
+    let src = samples(64, 7);
+    let (mut left, mut right) = (vec![0.0; 32], vec![0.0; 5]);
+
+    native::deinterleave_stereo(&mut left, &mut right, &src);
+
+    // Five frames done, and nothing written past where `right` ran out.
+    assert_eq!(left[5], 0.0);
+    assert_ne!(left[4], 0.0);
 }

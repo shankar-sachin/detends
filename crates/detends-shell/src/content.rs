@@ -368,7 +368,7 @@ fn studio(c: &mut Canvas<'_>) {
     let total = card.x * 3.0 + gap * 2.0;
     let start = centre.x - total * 0.5 + card.x * 0.5;
 
-    for (index, (name, extension)) in [("Page", ".dpg"), ("Deck", ".ddk"), ("Grid", ".dgr")]
+    for (index, (name, extension)) in [("Page", ".dpg"), ("Deck", ".dek"), ("Grid", ".dgr")]
         .iter()
         .enumerate()
     {
@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn studio_uses_the_native_extensions() {
         let s = strings(&render(Mode::Studio));
-        for extension in [".dpg", ".ddk", ".dgr"] {
+        for extension in [".dpg", ".dek", ".dgr"] {
             assert!(s.iter().any(|t| t == extension), "missing {extension}");
         }
         // Never the long forms.

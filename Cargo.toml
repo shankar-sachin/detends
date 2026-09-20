@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/detends-motion",
   "crates/detends-native",
+  "crates/detends-fs",
   "crates/detends-paint",
   "crates/detends-render",
   "crates/detends-time",
@@ -11,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.0"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.87"
 license = "MIT OR Apache-2.0"
@@ -20,6 +21,7 @@ authors = ["détends"]
 [workspace.dependencies]
 detends-motion = { path = "crates/detends-motion" }
 detends-native = { path = "crates/detends-native" }
+detends-fs     = { path = "crates/detends-fs" }
 detends-paint  = { path = "crates/detends-paint" }
 detends-render = { path = "crates/detends-render" }
 detends-time   = { path = "crates/detends-time" }

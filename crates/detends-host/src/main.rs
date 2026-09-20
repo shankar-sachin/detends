@@ -41,6 +41,8 @@ struct Options {
     icons: bool,
     /// Which of Clock's utilities to open, and some state to show in it.
     section: Option<String>,
+    /// Which Files destination to show.
+    place: Option<String>,
 }
 
 fn options() -> Options {
@@ -71,6 +73,7 @@ fn options() -> Options {
         fps: flag("--fps"),
         icons: flag("--icons"),
         section: value("--section"),
+        place: value("--place"),
     }
 }
 
@@ -186,6 +189,20 @@ impl ApplicationHandler for App {
             }
         }
 
+        // The vault behind Files (§9). A capture gets a vault of its own under
+        // the temporary directory, for the same reason it gets no schedule: a
+        // screenshot must never show — or disturb — the user's own files.
+        let vault_root = if self.options.capture.is_some() {
+            let root = std::env::temp_dir().join("detends-capture-vault");
+            seed_capture_vault(&root);
+            Some(root)
+        } else {
+            detends_fs::place::default_root()
+        };
+        if let Some(root) = vault_root {
+            shell.open_vault(root);
+        }
+
         // The logo. Boot falls back to a typographic mark if either file is
         // missing, so a broken asset costs the artwork rather than the boot.
         let mut renderer = renderer;
@@ -290,6 +307,15 @@ impl ApplicationHandler for App {
                         input::Event::KeyUp { key, modifiers }
                     },
                 );
+
+                // Power is asked for by the shell and carried out here: the
+                // shell has no business knowing how a machine is turned off,
+                // and the host has no business knowing how it was asked (§19).
+                if let Some(power) = shell.take_power_request() {
+                    Self::act_on_power(power, shell, event_loop);
+                    return;
+                }
+
                 window.request_redraw();
             }
 
@@ -428,6 +454,22 @@ impl App {
             }
         }
 
+        if let Some(place) = self.options.place.clone() {
+            use detends_fs::Place;
+            let chosen = match place.to_lowercase().as_str() {
+                "recents" | "recent" => Some(Place::Recents),
+                "studio" => Some(Place::Studio),
+                "downloads" | "download" => Some(Place::Downloads),
+                "screenshots" | "screenshot" => Some(Place::Screenshots),
+                "deleted" | "trash" => Some(Place::Deleted),
+                _ => None,
+            };
+            match chosen {
+                Some(chosen) => shell.show_place(t, chosen),
+                None => log::warn!("no Files destination called {place:?}"),
+            }
+        }
+
         match self.options.open.as_deref() {
             Some("search") => {
                 shell.open_search(t);
@@ -470,6 +512,32 @@ impl App {
 }
 
 impl App {
+    /// Carry out a power request (§19).
+    ///
+    /// Only the two that end the session are real here; Lock and Sleep need a
+    /// compositor and a session manager that détends does not have yet, so they
+    /// say so rather than pretending. Whatever happens, Clock's state is
+    /// written out first — an alarm set before a restart is still set after.
+    fn act_on_power(
+        power: detends_shell::Power,
+        shell: &mut Shell,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+    ) {
+        use detends_shell::Power;
+
+        shell.save_schedule();
+
+        match power {
+            Power::ShutDown | Power::Restart => {
+                log::info!("détends: {power:?}");
+                event_loop.exit();
+            }
+            Power::Lock | Power::Sleep => {
+                log::warn!("{power:?} needs the compositor — Milestone 8");
+            }
+        }
+    }
+
     /// Render every icon at several sizes, so the set can be judged as a set.
     ///
     /// An icon that works at 96px and falls apart at 24 is not finished, and
@@ -550,6 +618,8 @@ impl App {
             focus: 0.0,
             near: palette.ground_far,
             far: palette.ground,
+            glow_warm: palette.glow_warm,
+            glow_cool: palette.glow_cool,
             glass_intensity: 1.0,
             glass_transparency: 1.0,
             presence: 1.0,
@@ -571,6 +641,8 @@ fn environment(state: detends_shell::EnvironmentState, now: f64) -> Environment 
         focus: state.focus,
         near: state.near,
         far: state.far,
+        glow_warm: state.glow_warm,
+        glow_cool: state.glow_cool,
         glass_intensity: state.glass_intensity,
         glass_transparency: state.glass_transparency,
         presence: state.presence,
@@ -616,4 +688,34 @@ fn write_png(path: &str, width: u32, height: u32, rgba: &[u8]) -> std::io::Resul
 /// The platform's light/dark preference.
 fn prefers_dark(window: &Window) -> bool {
     matches!(window.theme(), Some(winit::window::Theme::Dark) | None)
+}
+
+/// Fill the capture vault with the same kind of placeholder content the other
+/// modes draw (§22: "Use placeholder content where necessary").
+///
+/// A screenshot of an empty Files says nothing about the layout, and pointing a
+/// capture at the real vault would put the user's own filenames into any image
+/// that got shared. So captures get their own vault, rebuilt each time.
+fn seed_capture_vault(root: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(root);
+
+    // One of each Studio type, so the three document icons are all visible,
+    // plus a folder and an ordinary file for contrast.
+    let files: [(&str, &str); 7] = [
+        ("Studio/Physics Homework.dpg", "page"),
+        ("Studio/Michaelmas Term.dek", "deck"),
+        ("Studio/Lab Results.dgr", "grid"),
+        ("Studio/Term/Week 1.dpg", "page"),
+        ("Downloads/Resonance.pdf", "pdf"),
+        ("Downloads/inter.zip", "zip"),
+        ("Screenshots/Screenshot 2026-09-17 at 17.14.02.png", "png"),
+    ];
+
+    for (path, body) in files {
+        let path = root.join(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, body.as_bytes());
+    }
 }

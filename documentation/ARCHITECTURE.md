@@ -7,16 +7,24 @@ detends-compositor  ─────┘
    (smithay, later)
 ```
 
-Six crates, dependencies strictly one way.
+Eight crates, dependencies strictly one way.
 
 | Crate | Depends on | Owns |
 |---|---|---|
 | `detends-motion` | — | The spring solver. No geometry, no platform. |
+| `detends-native` | — | CPU kernels in C, C++ and aarch64 assembly, each with a portable twin. |
 | `detends-paint` | motion | What a frame *is*: geometry, colour, tokens, the display list. |
-| `detends-time` | jiff | Clock, and later alarms, timers, stopwatch. |
+| `detends-time` | jiff | Clock, World Clock, alarms, timers, stopwatch. |
+| `detends-fs` | jiff | The vault: destinations, entries, file operations, recently deleted. |
 | `detends-render` | paint, wgpu, glyphon | Every pixel. Nothing above it knows a GPU exists. |
-| `detends-shell` | paint, time | Boot, five modes, Focus, System Center, Search. Never draws. |
+| `detends-shell` | paint, time, fs | Boot, five modes, Focus, System Center, Search. Never draws. |
 | `detends-host` | shell, render, winit | The platform. The only crate that knows what a window is. |
+
+`detends-time` and `detends-fs` are the two domain crates: no GPU, no window, no
+rendering, and testable in full without any of them. Clock is built on the first
+and Files on the second, which is why both modes are real rather than
+placeholder layouts. A mode that has grown a domain crate has stopped being a
+sketch.
 
 ## The seam
 

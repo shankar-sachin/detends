@@ -85,7 +85,12 @@ pub fn parse(query: &str) -> Option<Command> {
         "lock" => return Some(Command::Power(Power::Lock)),
         "sleep" => return Some(Command::Power(Power::Sleep)),
         "restart" | "reboot" => return Some(Command::Power(Power::Restart)),
-        "shut down" | "shutdown" | "power off" => return Some(Command::Power(Power::ShutDown)),
+        // "quit" and "exit" are the words a person reaches for when they want
+        // out, whatever the system calls it. Search is the reliable way out on
+        // a platform whose window manager eats Super+Q before it arrives.
+        "shut down" | "shutdown" | "power off" | "quit" | "exit" => {
+            return Some(Command::Power(Power::ShutDown))
+        }
         "airplane" | "airplane mode" | "flight mode" => return Some(Command::Airplane(true)),
         _ => {}
     }
@@ -438,6 +443,8 @@ mod tests {
         assert_eq!(parse("sleep"), Some(Command::Power(Power::Sleep)));
         assert_eq!(parse("restart"), Some(Command::Power(Power::Restart)));
         assert_eq!(parse("shut down"), Some(Command::Power(Power::ShutDown)));
+        assert_eq!(parse("quit"), Some(Command::Power(Power::ShutDown)));
+        assert_eq!(parse("exit"), Some(Command::Power(Power::ShutDown)));
     }
 
     #[test]

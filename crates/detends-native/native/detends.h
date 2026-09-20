@@ -17,6 +17,10 @@ size_t detends_resample_cubic(float *dst, size_t dst_capacity, const float *src,
 float detends_grain_energy(const float *values, int width, int height, int index,
                            const float *kernel, int radius);
 
+/* The aarch64 kernels are declared in Rust rather than here: they have no C
+ * callers, and a header that promised them on every platform would be a lie on
+ * the ones where they are not built. See src/ffi.rs. */
+
 /* Chime synthesis — native/synth.cpp */
 void detends_chime(float *out, size_t frames, unsigned channels, float sample_rate,
                    float base_hz, float seconds);

@@ -489,10 +489,21 @@ pub enum IconShape {
     Alarm = 12,
     Stopwatch = 13,
     Globe = 14,
+
+    // Files: the destinations, and the détends document family (§9).
+    Recent = 15,
+    Download = 16,
+    Screenshot = 17,
+    Trash = 18,
+    Folder = 19,
+    Document = 20,
+    Page = 21,
+    Deck = 22,
+    Grid = 23,
 }
 
 impl IconShape {
-    pub const ALL: [IconShape; 15] = [
+    pub const ALL: [IconShape; 24] = [
         IconShape::Music,
         IconShape::Clock,
         IconShape::Mail,
@@ -508,6 +519,15 @@ impl IconShape {
         IconShape::Alarm,
         IconShape::Stopwatch,
         IconShape::Globe,
+        IconShape::Recent,
+        IconShape::Download,
+        IconShape::Screenshot,
+        IconShape::Trash,
+        IconShape::Folder,
+        IconShape::Document,
+        IconShape::Page,
+        IconShape::Deck,
+        IconShape::Grid,
     ];
 
     pub fn name(self) -> &'static str {
@@ -527,6 +547,15 @@ impl IconShape {
             IconShape::Alarm => "Alarm",
             IconShape::Stopwatch => "Stopwatch",
             IconShape::Globe => "Globe",
+            IconShape::Recent => "Recent",
+            IconShape::Download => "Download",
+            IconShape::Screenshot => "Screenshot",
+            IconShape::Trash => "Trash",
+            IconShape::Folder => "Folder",
+            IconShape::Document => "Document",
+            IconShape::Page => "Page",
+            IconShape::Deck => "Deck",
+            IconShape::Grid => "Grid",
         }
     }
 }

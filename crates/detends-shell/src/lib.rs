@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod boot;
+pub mod browser;
 pub mod center;
 pub mod clockface;
 pub mod content;
@@ -15,6 +16,7 @@ pub mod status;
 pub mod system;
 
 pub use boot::{Boot, Mark, Phase};
+pub use browser::Browser;
 pub use input::{Event, Key, Modifiers, MouseButton};
 pub use clockface::{ClockFace, Section};
 pub use home::Home;

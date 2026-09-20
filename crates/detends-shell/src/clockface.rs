@@ -52,7 +52,7 @@ impl Section {
 }
 
 /// Icon size in the section row.
-const TAB_ICON: f32 = 26.0;
+const TAB_ICON: f32 = 31.0;
 const TAB_PITCH: f32 = 116.0;
 
 /// Where the four utilities sit, for drawing and for hit-testing alike.
@@ -250,7 +250,7 @@ impl ClockFace {
         }
 
         // Whatever is open, written underneath.
-        let body_top = area.center.y - area.height() * 0.04;
+        let body_top = area.center.y - area.height() * 0.075;
         let rows = self.body(schedule, stamp, zone);
 
         if rows.is_empty() {

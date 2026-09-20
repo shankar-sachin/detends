@@ -35,6 +35,9 @@ pub struct Environment {
     pub focus: f32,
     pub near: Color,
     pub far: Color,
+    /// The two lights the field is lit by. Alpha is strength, not opacity.
+    pub glow_warm: Color,
+    pub glow_cool: Color,
     pub glass_intensity: f32,
     pub glass_transparency: f32,
     /// How much of the environment has arrived, 0 to 1.
@@ -53,6 +56,8 @@ impl Default for Environment {
             focus: 0.0,
             near: Color::hex(0x1A1F26),
             far: Color::hex(0x0B0D10),
+            glow_warm: Color::hex(0x3A2A24).alpha(0.30),
+            glow_cool: Color::hex(0x24324A).alpha(0.55),
             glass_intensity: 1.0,
             glass_transparency: 1.0,
             presence: 1.0,
@@ -335,6 +340,8 @@ impl Renderer {
                 focus: env.focus,
                 near: color_array(env.near),
                 far: color_array(env.far),
+                glow_warm: color_array(env.glow_warm),
+                glow_cool: color_array(env.glow_cool),
                 presence: env.presence,
                 _pad: [0.0; 3],
             }),

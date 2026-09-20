@@ -9,16 +9,50 @@ identical on both.
 
 | | |
 |---|---|
-| `Super + 1` | Music |
-| `Super + 2` | Clock |
-| `Super + 3` | Mail |
-| `Super + 4` | Studio |
-| `Super + 5` | Files |
+| `Super + 1` … `Super + 5` | Music · Clock · Mail · Studio · Files |
+| `1` … `5` | The same five, when nothing is being typed into |
 | `Super + Space` | Universal Search |
-| `Escape` | Dismiss Search or System Center |
+| `Escape` | Back out one step |
+| `Super + Q` | Leave détends |
 
-A **bare** number never navigates — otherwise typing into Search or a document
-would teleport the user.
+The five places are reachable **without** a modifier: a chord the window system
+might claim is not a reliable way to reach the only five destinations a system
+has. The exception is the one that matters — while a name is being typed, into
+Search or into a field in Files, `1` is the digit one. "Week 1" has to be a
+folder a person can name.
+
+`Escape` backs out one step rather than doing one fixed thing: first a name
+being typed, then Search or System Center, then the mode, landing at Home. It
+never leaves the system — which is only a safe rule because `Super + Q` does.
+An Escape that quits can never be pressed confidently, and every surface it
+might dismiss becomes a trap.
+
+It is also matched **before** any mode sees the keyboard. Clock, Files and Home
+each claim bare keys while they are in view, so a global gesture has to be taken
+first or the mode becomes a room with no door.
+
+## Files
+
+Bare keys, because Files is a place you are in rather than a window you have
+focused. Nothing here is destructive without a modifier.
+
+| | |
+|---|---|
+| `←` `→` | Move between the five destinations |
+| `↑` `↓` | Move the selection |
+| `Enter` | Open — a folder descends, a `.dpg`/`.dek`/`.dgr` goes to Studio |
+| `Backspace` | Up, towards the destination |
+| `n` | New folder |
+| `r` | Rename — or, in Recently Deleted, **restore** |
+| `d` | Duplicate |
+| `s` | Change the order: name, modified, size, kind |
+| `Super + Backspace` | Delete. In Recently Deleted, delete for good |
+
+Deleting is the one destructive key, so it is the one key that wants a modifier
+(§9: deleting moves things aside, and Recently Deleted keeps them for 30 days).
+
+While a name is being typed, every key is a character: `Enter` accepts,
+`Escape` abandons, and `n`, `r`, `d` and `s` are letters.
 
 ## Search
 
@@ -33,6 +67,7 @@ One field. It executes and disappears; there is no result list to choose from.
 | `wi-fi`, `bluetooth`, `volume`, `brightness` | Opens System Center |
 | `airplane` | Turns Airplane Mode on |
 | `lock`, `sleep`, `restart`, `shut down` | Power (§19) |
+| `quit`, `exit` | Leave détends — the way out that no window manager can eat |
 
 A bare number means **minutes** — nobody sets a twenty-second timer by saying
 "timer 20". Anything unrecognised matches nothing rather than guessing: a wrong

@@ -38,6 +38,15 @@ pub struct Palette {
     pub rim: Color,
     /// The one accent in the system, used sparingly — Focus, selection.
     pub accent: Color,
+    /// The two lights the environment is lit by (§17).
+    ///
+    /// The ground stays deep and neutral; these carry the colour. Two of them,
+    /// at different hues and different corners, because one light over a flat
+    /// ground is a radial gradient and reads as exactly that — while two give
+    /// the field a direction and a gentle hue shift across the screen, which
+    /// is what glass needs to have something worth bending.
+    pub glow_warm: Color,
+    pub glow_cool: Color,
 }
 
 /// The single hue détends is built on: a cool blue-grey, barely there.
@@ -56,8 +65,8 @@ impl Palette {
             // present and visually absent, and the pane reads as a grey
             // rectangle. The range is still dark and still calm — it simply
             // varies across the screen.
-            ground: Color::oklch(0.105, NEUTRAL_CHROMA, HUE),
-            ground_far: Color::oklch(0.315, NEUTRAL_CHROMA * 2.2, HUE + 22.0),
+            ground: Color::oklch(0.095, NEUTRAL_CHROMA, HUE),
+            ground_far: Color::oklch(0.235, NEUTRAL_CHROMA * 2.2, HUE + 22.0),
             text: Color::oklch(0.965, 0.003, HUE),
             text_soft: Color::oklch(0.740, 0.005, HUE),
             text_faint: Color::oklch(0.560, 0.006, HUE),
@@ -66,6 +75,11 @@ impl Palette {
             glass: Color::oklch(0.62, 0.008, HUE).alpha(0.10),
             rim: Color::oklch(0.98, 0.004, HUE).alpha(0.30),
             accent: Color::oklch(0.72, 0.085, 232.0),
+            // Restrained on purpose: the alpha is the strength, and at these
+            // values neither light is nameable as a colour. You should not be
+            // able to say "it is blue" — only that it is not grey.
+            glow_cool: Color::oklch(0.50, 0.070, 248.0).alpha(0.34),
+            glow_warm: Color::oklch(0.52, 0.055, 28.0).alpha(0.20),
         }
     }
 
@@ -81,6 +95,11 @@ impl Palette {
             glass: Color::oklch(0.55, 0.006, HUE).alpha(0.07),
             rim: Color::oklch(1.0, 0.0, HUE).alpha(0.55),
             accent: Color::oklch(0.55, 0.105, 232.0),
+            // On a light ground the lights tint rather than illuminate, so
+            // they are weaker still — a bright field shows colour far more
+            // readily than a dark one.
+            glow_cool: Color::oklch(0.80, 0.055, 248.0).alpha(0.40),
+            glow_warm: Color::oklch(0.86, 0.045, 42.0).alpha(0.30),
         }
     }
 

@@ -470,9 +470,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "detends-host"
-version = "1.1.0"
+name = "detends-fs"
+version = "2.0.0"
 dependencies = [
+ "directories",
+ "jiff",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "detends-host"
+version = "2.0.0"
+dependencies = [
+ "detends-fs",
  "detends-paint",
  "detends-render",
  "detends-shell",
@@ -486,25 +497,25 @@ dependencies = [
 
 [[package]]
 name = "detends-motion"
-version = "1.1.0"
+version = "2.0.0"
 
 [[package]]
 name = "detends-native"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "detends-paint"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "detends-motion",
 ]
 
 [[package]]
 name = "detends-render"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "bytemuck",
  "detends-paint",
@@ -515,8 +526,9 @@ dependencies = [
 
 [[package]]
 name = "detends-shell"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
+ "detends-fs",
  "detends-paint",
  "detends-time",
  "jiff",
@@ -525,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "detends-time"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "directories",
  "jiff",

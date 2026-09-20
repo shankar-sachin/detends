@@ -72,11 +72,56 @@ fn how_much_faster_is_the_assembly() {
         std::hint::black_box(portable::analyse(&src));
     });
 
+    println!("\n  decode from i16, {SAMPLES} samples");
+    let ints: Vec<i16> = (0..SAMPLES).map(|i| (i as i32 * 977 % 65536 - 32768) as i16).collect();
+    let mut out = vec![0.0_f32; SAMPLES];
+    let native_decode = time("native", RUNS, || {
+        native::i16_to_f32(&mut out, &ints);
+        std::hint::black_box(&out);
+    });
+    let mut out = vec![0.0_f32; SAMPLES];
+    let portable_decode = time("portable", RUNS, || {
+        portable::i16_to_f32(&mut out, &ints);
+        std::hint::black_box(&out);
+    });
+
+    // The two the load-store unit does for free. Frames, not samples: the
+    // interleaved buffer holds two floats per frame.
+    let frames = SAMPLES / 2;
+    println!("\n  deinterleave, {frames} frames");
+    let (mut left, mut right) = (vec![0.0_f32; frames], vec![0.0_f32; frames]);
+    let native_split = time("native", RUNS, || {
+        native::deinterleave_stereo(&mut left, &mut right, &src);
+        std::hint::black_box((&left, &right));
+    });
+    let (mut left, mut right) = (vec![0.0_f32; frames], vec![0.0_f32; frames]);
+    let portable_split = time("portable", RUNS, || {
+        portable::deinterleave_stereo(&mut left, &mut right, &src);
+        std::hint::black_box((&left, &right));
+    });
+
+    println!("\n  interleave, {frames} frames");
+    let planar_l = vec![0.25_f32; frames];
+    let planar_r = vec![-0.25_f32; frames];
+    let mut woven = vec![0.0_f32; frames * 2];
+    let native_weave = time("native", RUNS, || {
+        native::interleave_stereo(&mut woven, &planar_l, &planar_r);
+        std::hint::black_box(&woven);
+    });
+    let mut woven = vec![0.0_f32; frames * 2];
+    let portable_weave = time("portable", RUNS, || {
+        portable::interleave_stereo(&mut woven, &planar_l, &planar_r);
+        std::hint::black_box(&woven);
+    });
+
     println!("\n  speedup");
     for (label, portable_time, native_time) in [
         ("mix", portable_mix, native_mix),
         ("convert", portable_convert, native_convert),
         ("analyse", portable_analyse, native_analyse),
+        ("decode from i16", portable_decode, native_decode),
+        ("deinterleave (LD2)", portable_split, native_split),
+        ("interleave (ST2)", portable_weave, native_weave),
     ] {
         println!("    {label:<28} {:>8.2}×", portable_time / native_time);
     }

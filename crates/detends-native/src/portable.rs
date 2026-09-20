@@ -34,6 +34,35 @@ pub fn f32_to_i16(dst: &mut [i16], src: &[f32]) {
     }
 }
 
+/// Sixteen-bit integers to float samples.
+///
+/// Divided by 32768, not 32767: the scale is then an exact power of two, so
+/// every value converts without rounding error and the most negative sample
+/// lands exactly on -1.0.
+pub fn i16_to_f32(dst: &mut [f32], src: &[i16]) {
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d = *s as f32 / 32768.0;
+    }
+}
+
+/// Interleaved stereo to two planar buffers.
+pub fn deinterleave_stereo(left: &mut [f32], right: &mut [f32], src: &[f32]) {
+    let frames = left.len().min(right.len()).min(src.len() / 2);
+    for i in 0..frames {
+        left[i] = src[i * 2];
+        right[i] = src[i * 2 + 1];
+    }
+}
+
+/// Two planar buffers to interleaved stereo.
+pub fn interleave_stereo(dst: &mut [f32], left: &[f32], right: &[f32]) {
+    let frames = left.len().min(right.len()).min(dst.len() / 2);
+    for i in 0..frames {
+        dst[i * 2] = left[i];
+        dst[i * 2 + 1] = right[i];
+    }
+}
+
 /// Loudest absolute sample, and the sum of squares.
 pub fn analyse(src: &[f32]) -> (f32, f32) {
     let mut peak = 0.0_f32;
@@ -71,9 +100,46 @@ mod tests {
     }
 
     #[test]
+    fn the_integer_round_trip_is_exact_at_full_scale() {
+        // -1.0 maps to the most negative sample and back, because the scale is
+        // a power of two. This is the reason for 32768 rather than 32767.
+        let mut floats = vec![0.0_f32; 3];
+        i16_to_f32(&mut floats, &[-32768, 0, 16384]);
+        assert_eq!(floats, vec![-1.0, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn channels_survive_a_round_trip_through_planar_and_back() {
+        let original: Vec<f32> = (0..14).map(|i| i as f32).collect();
+        let frames = original.len() / 2;
+
+        let (mut left, mut right) = (vec![0.0; frames], vec![0.0; frames]);
+        deinterleave_stereo(&mut left, &mut right, &original);
+
+        assert_eq!(left, vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0]);
+        assert_eq!(right, vec![1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0]);
+
+        let mut back = vec![0.0; original.len()];
+        interleave_stereo(&mut back, &left, &right);
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn channel_work_stops_at_the_shortest_buffer_rather_than_panicking() {
+        let mut left = vec![0.0; 8];
+        let mut right = vec![0.0; 2];
+        deinterleave_stereo(&mut left, &mut right, &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(right, vec![2.0, 4.0]);
+        assert_eq!(left[2], 0.0, "it should not have run past the short one");
+    }
+
+    #[test]
     fn empty_input_is_not_a_special_case_anywhere() {
         mix_gain(&mut [], &[], 1.0);
         f32_to_i16(&mut [], &[]);
+        i16_to_f32(&mut [], &[]);
+        deinterleave_stereo(&mut [], &mut [], &[]);
+        interleave_stereo(&mut [], &[], &[]);
         assert_eq!(analyse(&[]), (0.0, 0.0));
     }
 }

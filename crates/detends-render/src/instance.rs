@@ -164,6 +164,9 @@ pub struct EnvUniforms {
     pub focus: f32,
     pub near: [f32; 4],
     pub far: [f32; 4],
+    /// The two light sources, as `rgb` + strength in `a`.
+    pub glow_warm: [f32; 4],
+    pub glow_cool: [f32; 4],
     pub presence: f32,
     pub _pad: [f32; 3],
 }

@@ -306,6 +306,109 @@ fn icon_globe(p: vec2<f32>, w: f32) -> f32 {
     return op_union(sphere, op_union(equator, meridian));
 }
 
+// ---- Files ---------------------------------------------------------------
+//
+// The destinations, and the three détends document types. §9 asks for "distinct,
+// elegant icons" for native Studio files, and distinct is the operative word:
+// Page, Deck and Grid share one silhouette — the same sheet with a folded
+// corner — and differ only in the mark inside it. That way the family reads as a
+// family at a glance, and the member is legible on a second look.
+
+// The sheet every document type is drawn on: a page with its corner turned.
+fn document_sheet(p: vec2<f32>, w: f32) -> f32 {
+    let body = outline(sd_box(p, vec2<f32>(0.62, 0.84), 0.12), w);
+    // The fold, as two strokes meeting at the corner.
+    let fold_a = outline(sd_segment(p, vec2<f32>(0.18, -0.84), vec2<f32>(0.18, -0.44)), w);
+    let fold_b = outline(sd_segment(p, vec2<f32>(0.18, -0.44), vec2<f32>(0.62, -0.44)), w);
+    return op_union(body, op_union(fold_a, fold_b));
+}
+
+fn icon_document(p: vec2<f32>, w: f32) -> f32 {
+    return document_sheet(p, w);
+}
+
+// Page: lines of text, shortened at the end like a real paragraph.
+fn icon_page(p: vec2<f32>, w: f32) -> f32 {
+    let sheet = document_sheet(p, w);
+    let l1 = outline(sd_segment(p, vec2<f32>(-0.30, -0.12), vec2<f32>(0.30, -0.12)), w);
+    let l2 = outline(sd_segment(p, vec2<f32>(-0.30, 0.16), vec2<f32>(0.30, 0.16)), w);
+    let l3 = outline(sd_segment(p, vec2<f32>(-0.30, 0.44), vec2<f32>(0.06, 0.44)), w);
+    return op_union(sheet, op_union(l1, op_union(l2, l3)));
+}
+
+// Deck: a slide — one framed rectangle, the way a deck is one thing per page.
+fn icon_deck(p: vec2<f32>, w: f32) -> f32 {
+    let sheet = document_sheet(p, w);
+    let slide = outline(sd_box(p - vec2<f32>(0.0, 0.14), vec2<f32>(0.32, 0.24), 0.05), w);
+    return op_union(sheet, slide);
+}
+
+// Grid: two rules crossing, which is the whole idea of a spreadsheet.
+fn icon_grid(p: vec2<f32>, w: f32) -> f32 {
+    let sheet = document_sheet(p, w);
+    let h = outline(sd_segment(p, vec2<f32>(-0.34, 0.14), vec2<f32>(0.34, 0.14)), w);
+    let v = outline(sd_segment(p, vec2<f32>(0.0, -0.20), vec2<f32>(0.0, 0.48)), w);
+    let top = outline(sd_segment(p, vec2<f32>(-0.34, -0.20), vec2<f32>(0.34, -0.20)), w);
+    return op_union(sheet, op_union(h, op_union(v, top)));
+}
+
+// Folder: the Files mark itself, so a folder in a listing and the place it
+// lives in are visibly the same idea.
+fn icon_folder(p: vec2<f32>, w: f32) -> f32 {
+    return icon_files(p, w);
+}
+
+// Recents: a clock face turning back — the hand points anticlockwise.
+fn icon_recent(p: vec2<f32>, w: f32) -> f32 {
+    let ring = outline(sd_circle(p, 0.76), w);
+    let hand_h = outline(sd_segment(p, vec2<f32>(0.0, 0.0), vec2<f32>(-0.34, 0.0)), w);
+    let hand_m = outline(sd_segment(p, vec2<f32>(0.0, 0.0), vec2<f32>(0.0, -0.46)), w);
+    return op_union(ring, op_union(hand_h, hand_m));
+}
+
+// Downloads: an arrow coming down onto a line.
+fn icon_download(p: vec2<f32>, w: f32) -> f32 {
+    let shaft = outline(sd_segment(p, vec2<f32>(0.0, -0.74), vec2<f32>(0.0, 0.26)), w);
+    let head_l = outline(sd_segment(p, vec2<f32>(-0.34, -0.08), vec2<f32>(0.0, 0.26)), w);
+    let head_r = outline(sd_segment(p, vec2<f32>(0.34, -0.08), vec2<f32>(0.0, 0.26)), w);
+    let floor = outline(sd_segment(p, vec2<f32>(-0.62, 0.70), vec2<f32>(0.62, 0.70)), w);
+    return op_union(op_union(shaft, floor), op_union(head_l, head_r));
+}
+
+// Screenshots: the corner marks of a capture selection.
+fn icon_screenshot(p: vec2<f32>, w: f32) -> f32 {
+    let a = 0.72;
+    let b = 0.30;
+    // Four L-shaped corners, drawn as eight strokes.
+    let tl = op_union(
+        outline(sd_segment(p, vec2<f32>(-a, -a), vec2<f32>(-b, -a)), w),
+        outline(sd_segment(p, vec2<f32>(-a, -a), vec2<f32>(-a, -b)), w));
+    let tr = op_union(
+        outline(sd_segment(p, vec2<f32>(a, -a), vec2<f32>(b, -a)), w),
+        outline(sd_segment(p, vec2<f32>(a, -a), vec2<f32>(a, -b)), w));
+    let bl = op_union(
+        outline(sd_segment(p, vec2<f32>(-a, a), vec2<f32>(-b, a)), w),
+        outline(sd_segment(p, vec2<f32>(-a, a), vec2<f32>(-a, b)), w));
+    let br = op_union(
+        outline(sd_segment(p, vec2<f32>(a, a), vec2<f32>(b, a)), w),
+        outline(sd_segment(p, vec2<f32>(a, a), vec2<f32>(a, b)), w));
+    return op_union(op_union(tl, tr), op_union(bl, br));
+}
+
+// Recently Deleted: a bin. Lid, body, and the two rules down its face.
+fn icon_trash(p: vec2<f32>, w: f32) -> f32 {
+    let lid = outline(sd_segment(p, vec2<f32>(-0.74, -0.46), vec2<f32>(0.74, -0.46)), w);
+    let handle = outline(sd_segment(p, vec2<f32>(-0.24, -0.72), vec2<f32>(0.24, -0.72)), w);
+    let stem_l = outline(sd_segment(p, vec2<f32>(-0.24, -0.72), vec2<f32>(-0.24, -0.46)), w);
+    let stem_r = outline(sd_segment(p, vec2<f32>(0.24, -0.72), vec2<f32>(0.24, -0.46)), w);
+    let side_l = outline(sd_segment(p, vec2<f32>(-0.56, -0.46), vec2<f32>(-0.44, 0.76)), w);
+    let side_r = outline(sd_segment(p, vec2<f32>(0.56, -0.46), vec2<f32>(0.44, 0.76)), w);
+    let floor = outline(sd_segment(p, vec2<f32>(-0.44, 0.76), vec2<f32>(0.44, 0.76)), w);
+    return op_union(
+        op_union(op_union(lid, handle), op_union(stem_l, stem_r)),
+        op_union(op_union(side_l, side_r), floor));
+}
+
 fn icon_distance(shape: i32, p: vec2<f32>, w: f32) -> f32 {
     switch shape {
         case 0:  { return icon_music(p, w); }
@@ -323,6 +426,15 @@ fn icon_distance(shape: i32, p: vec2<f32>, w: f32) -> f32 {
         case 12: { return icon_alarm(p, w); }
         case 13: { return icon_stopwatch(p, w); }
         case 14: { return icon_globe(p, w); }
+        case 15: { return icon_recent(p, w); }
+        case 16: { return icon_download(p, w); }
+        case 17: { return icon_screenshot(p, w); }
+        case 18: { return icon_trash(p, w); }
+        case 19: { return icon_folder(p, w); }
+        case 20: { return icon_document(p, w); }
+        case 21: { return icon_page(p, w); }
+        case 22: { return icon_deck(p, w); }
+        case 23: { return icon_grid(p, w); }
         default: { return 1.0; }
     }
 }

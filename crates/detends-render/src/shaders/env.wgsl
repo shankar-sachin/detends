@@ -17,6 +17,9 @@ struct Env {
     focus: f32,
     near: vec4<f32>,
     far: vec4<f32>,
+    // The two light sources: rgb, with strength in a.
+    glow_warm: vec4<f32>,
+    glow_cool: vec4<f32>,
     /// How much of the environment has arrived, 0 to 1.
     ///
     /// Separate from the global fade in the present pass, because during boot
@@ -91,6 +94,32 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let eased = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 
     var color = mix(env.far.rgb, env.near.rgb, 1.0 - eased);
+
+    // Two pools of coloured light, added on top of the neutral field.
+    //
+    // Added rather than mixed, because light is additive and mixing toward a
+    // hue would grey the ground out instead of lifting it. Each falls off over
+    // a large radius with the same noise warp bending it, so the two never
+    // read as two circles — only as a field that is warmer one side and cooler
+    // the other.
+    let cool_at = vec2<f32>(-0.30, -0.26) + drift * 1.4;
+    let warm_at = vec2<f32>(0.36, 0.30) - drift;
+
+    let cool_d = length(p - cool_at) * 1.06 + warp * 0.8;
+    let warm_d = length(p - warm_at) * 1.24 + warp * 0.6;
+
+    // Squared falloff: gentle in the middle, and genuinely gone at the edge,
+    // so neither light lands on the periphery where it would fight the
+    // vignette that keeps attention centred.
+    let cool = pow(clamp(1.0 - cool_d, 0.0, 1.0), 2.9);
+    let warm = pow(clamp(1.0 - warm_d, 0.0, 1.0), 3.1);
+
+    // Focus dims the lights faster than it contracts the field: the room goes
+    // quiet before it goes dark (§12).
+    let lit = 1.0 - env.focus * 0.72;
+
+    color += env.glow_cool.rgb * (cool * env.glow_cool.a * lit);
+    color += env.glow_warm.rgb * (warm * env.glow_warm.a * lit);
 
     // A trace of noise in the environment itself. Sixteen-bit targets do not
     // band, but the blur pyramid's lower levels are where smooth gradients

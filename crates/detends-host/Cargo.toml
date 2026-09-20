@@ -15,6 +15,7 @@ detends-paint = { workspace = true }
 detends-render = { workspace = true }
 detends-shell = { workspace = true }
 detends-time = { workspace = true }
+detends-fs = { workspace = true }
 winit = { workspace = true }
 pollster = { workspace = true }
 log = { workspace = true }

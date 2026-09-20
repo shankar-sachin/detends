@@ -17,10 +17,17 @@ use detends_paint::{
 use detends_time::TimeOfDay;
 
 /// Size of an icon on Home, in logical units.
-const ICON: f32 = 58.0;
+///
+/// Home is the one place in détends whose entire job is these five marks, so
+/// they are drawn at a size that reads as the subject of the screen rather than
+/// as a row of small controls beneath a clock.
+const ICON: f32 = 74.0;
 
 /// Centre-to-centre spacing between them.
-const PITCH: f32 = 128.0;
+///
+/// Generously wider than the icon: the gap is what stops five marks in a line
+/// reading as a dock (§16).
+const PITCH: f32 = 158.0;
 
 /// Where each place sits.
 ///

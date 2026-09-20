@@ -15,7 +15,7 @@ use detends_paint::{
 /// How long one stays on screen.
 const DWELL: Seconds = 4.0;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
     pub title: String,
     pub detail: String,

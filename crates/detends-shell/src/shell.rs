@@ -5,6 +5,7 @@
 //! it gets drawn.
 
 use crate::boot::{Boot, Mark, Phase};
+use crate::browser::{self, Browser};
 use crate::center;
 use crate::content::{self, Canvas};
 use crate::input::{Event, Key, MouseButton};
@@ -20,6 +21,7 @@ use detends_paint::{
     Seconds, Spring, TextureId, Vec2,
 };
 use detends_paint::IconShape;
+use detends_fs::{Place, Vault};
 use detends_time::{Clock, Fired, Schedule, TimeOfDay, WorldClock};
 use jiff::tz::TimeZone;
 
@@ -37,6 +39,10 @@ pub struct Brand {
 #[derive(Clone, Copy, Debug)]
 pub struct EnvironmentState {
     pub focus: f32,
+    /// The two lights the field is lit by (§17). The shell owns the palette,
+    /// so the shell decides what the room is lit with.
+    pub glow_warm: Color,
+    pub glow_cool: Color,
     pub near: Color,
     pub far: Color,
     pub glass_intensity: f32,
@@ -77,6 +83,10 @@ pub struct Shell {
     brand: Option<Brand>,
     home: Home,
     clock_face: ClockFace,
+    browser: Browser,
+    /// The vault behind Files. `None` until a root is given, so the shell
+    /// still runs — and still tests — without touching a disk.
+    vault: Option<Vault>,
     schedule: Schedule,
     notifications: Notifications,
     zone: TimeZone,
@@ -116,6 +126,8 @@ impl Shell {
             brand: None,
             home: Home::new(),
             clock_face: ClockFace::new(),
+            browser: Browser::new(),
+            vault: None,
             schedule: Schedule::new(),
             notifications: Notifications::new(),
             zone: TimeZone::system(),
@@ -169,6 +181,38 @@ impl Shell {
 
     pub fn notifications(&self) -> &Notifications {
         &self.notifications
+    }
+
+    pub fn vault(&self) -> Option<&Vault> {
+        self.vault.as_ref()
+    }
+
+    pub fn browser(&self) -> &Browser {
+        &self.browser
+    }
+
+    pub fn browser_mut(&mut self) -> &mut Browser {
+        &mut self.browser
+    }
+
+    /// Give Files a vault to show.
+    ///
+    /// Separate from `new` for the same reason Clock's store is: the shell
+    /// should be constructible, drivable and testable without a filesystem
+    /// underneath it, and the host decides where the vault lives.
+    /// Point Files at one destination. Used by `--place` when capturing, and
+    /// by anything else that needs to put Files somewhere specific.
+    pub fn show_place(&mut self, now: Seconds, place: Place) {
+        if let Some(vault) = self.vault.take() {
+            self.browser.select_place(now, place, &vault);
+            self.vault = Some(vault);
+        }
+    }
+
+    pub fn open_vault(&mut self, root: std::path::PathBuf) {
+        let vault = Vault::open(root);
+        self.browser.refresh(&vault);
+        self.vault = Some(vault);
     }
 
     /// Read Clock's state back, and let anything that finished while détends
@@ -379,13 +423,37 @@ impl Shell {
         }
 
         match event {
+            // Escape backs out one step: first any temporary surface, then the
+            // mode, landing at Home. It never leaves the system — quitting is
+            // the window's own business.
+            //
+            // It is the FIRST arm on purpose. Clock, Files and Home each claim
+            // bare keys while they are in view, and an arm that matches `key`
+            // with a `_ => {}` fallback silently eats everything it does not
+            // name. A global gesture has to be matched before any mode gets the
+            // chance to swallow it, or the mode becomes a room with no door.
+            Event::KeyDown {
+                key: Key::Escape, ..
+            } => {
+                if self.browser.cancel() {
+                    // A name being typed is the innermost thing open.
+                } else if self.search.is_open() || self.center_open {
+                    self.close_search(now);
+                    self.close_center(now);
+                } else {
+                    self.go_home(now);
+                }
+            }
+
             // Bare digits, when nothing is being typed into.
             //
             // The five places have to be reachable without a modifier: a
             // combination the window system might claim is not a reliable way
             // to reach the only five destinations a system has.
             Event::KeyDown { key: Key::Mode(index), modifiers }
-                if modifiers.none() && !self.search.is_open() =>
+                if modifiers.none()
+                    && !self.search.is_open()
+                    && !self.browser.is_editing() =>
             {
                 if let Some(mode) = Mode::from_index(*index) {
                     self.close_center(now);
@@ -412,14 +480,22 @@ impl Shell {
                             self.save_schedule();
                         }
                     }
-                    Key::Enter => {
-                        if self.clock_face.section() == Section::Stopwatch {
-                            let stamp = self.clock.now().zoned().timestamp();
-                            self.schedule.stopwatch.lap(stamp);
-                        }
+                    Key::Enter if self.clock_face.section() == Section::Stopwatch => {
+                        let stamp = self.clock.now().zoned().timestamp();
+                        self.schedule.stopwatch.lap(stamp);
                     }
                     _ => {}
                 }
+            }
+
+            // Files' own keyboard (§9). Bare keys, because Files is a place
+            // you are in rather than a window you have focused.
+            Event::KeyDown { key, modifiers }
+                if self.navigator.current() == Destination::Mode(Mode::Files)
+                    && !self.search.is_open()
+                    && (modifiers.none() || modifiers.only_sys()) =>
+            {
+                self.files_key(now, key.clone(), modifiers.only_sys());
             }
 
             // Home's own keyboard.
@@ -454,6 +530,14 @@ impl Shell {
                         self.go(now, mode);
                     }
                 }
+                // Super+Q: leave. Escape deliberately never quits — it backs
+                // out, and a surface you cannot dismiss without exiting the
+                // system is a trap — but that only works if there is some
+                // other way out. Fullscreen has no close button, so this is
+                // it (§19).
+                Key::Character(c) if c.eq_ignore_ascii_case(&'q') => {
+                    self.pending_power = Some(Power::ShutDown);
+                }
                 _ => {}
             },
 
@@ -473,20 +557,6 @@ impl Shell {
                     Key::Mode(digit) => self.search.push((b'0' + digit) as char),
                     Key::Character(c) => self.search.push(*c),
                     _ => {}
-                }
-            }
-
-            // Escape backs out one step: first any temporary surface, then the
-            // mode, landing at Home. It never leaves the system — quitting is
-            // the window's own business.
-            Event::KeyDown {
-                key: Key::Escape, ..
-            } => {
-                if self.search.is_open() || self.center_open {
-                    self.close_search(now);
-                    self.close_center(now);
-                } else {
-                    self.go_home(now);
                 }
             }
 
@@ -513,6 +583,14 @@ impl Shell {
                     let area = self.mode_area();
                     if let Some(section) = clockface::hit(area, at) {
                         self.clock_face.select(now, section);
+                    }
+                } else if self.navigator.current() == Destination::Mode(Mode::Files) {
+                    let area = self.mode_area();
+                    if let Some(place) = browser::hit(area, at) {
+                        if let Some(vault) = self.vault.take() {
+                            self.browser.select_place(now, place, &vault);
+                            self.vault = Some(vault);
+                        }
                     }
                 } else if self.navigator.at_home() {
                     // The reason Home exists: the five places can be pressed.
@@ -582,6 +660,8 @@ impl Shell {
 
         EnvironmentState {
             focus: self.hush.value(now).clamp(0.0, 1.0),
+            glow_warm: self.palette.glow_warm,
+            glow_cool: self.palette.glow_cool,
             near: self.palette.ground_far,
             far: self.palette.ground,
             glass_intensity: self.glass.intensity,
@@ -757,6 +837,132 @@ impl Shell {
         );
     }
 
+    /// Files' keyboard, in one place (§9).
+    ///
+    /// Two states: typing a name, and not. While a name is being typed every
+    /// letter is a letter — that is why this is a single function rather than
+    /// guards spread across the event match, where a shortcut could quietly
+    /// steal a keystroke out of a text field.
+    fn files_key(&mut self, now: Seconds, key: Key, sys: bool) {
+        let Some(mut vault) = self.vault.take() else {
+            return;
+        };
+
+        if self.browser.is_editing() {
+            let action = match key {
+                Key::Enter => self.browser.commit(&vault),
+                Key::Backspace => {
+                    self.browser.backspace();
+                    browser::Action::None
+                }
+                Key::Space => {
+                    self.browser.type_char(' ');
+                    browser::Action::None
+                }
+                Key::Character(c) => {
+                    self.browser.type_char(c);
+                    browser::Action::None
+                }
+                // Digits reach the shell as `Mode`, because bare 1–5 navigate
+                // (§3). In a text field they are simply digits — "Week 1" has
+                // to be a name a person can type.
+                Key::Mode(digit) => {
+                    self.browser.type_char((b'0' + digit) as char);
+                    browser::Action::None
+                }
+                _ => browser::Action::None,
+            };
+            self.vault = Some(vault);
+            self.act_on(action);
+            return;
+        }
+
+        // Super+Backspace deletes, which is the one destructive key here and
+        // so the only one that wants a modifier.
+        let action = match (key, sys) {
+            (Key::Backspace, true) => {
+                let stamp = self.clock.now().zoned().timestamp();
+                self.browser.delete(&mut vault, stamp)
+            }
+            (Key::Backspace, false) => {
+                self.browser.up(&vault);
+                browser::Action::None
+            }
+            (Key::Left, false) => {
+                self.browser.step_place(now, -1, &vault);
+                browser::Action::None
+            }
+            (Key::Right, false) => {
+                self.browser.step_place(now, 1, &vault);
+                browser::Action::None
+            }
+            (Key::Up, false) => {
+                self.browser.step(-1);
+                browser::Action::None
+            }
+            (Key::Down, false) => {
+                self.browser.step(1);
+                browser::Action::None
+            }
+            (Key::Enter, false) => self.browser.open(&vault),
+            (Key::Character(c), false) => match c.to_ascii_lowercase() {
+                'n' => {
+                    self.browser.begin_new_folder();
+                    browser::Action::None
+                }
+                // In Recently Deleted the same key means "put it back", which
+                // is the only thing anyone wants there (§9).
+                'r' => {
+                    if self.browser.place() == Place::Deleted {
+                        self.browser.restore(&mut vault)
+                    } else {
+                        self.browser.begin_rename();
+                        browser::Action::None
+                    }
+                }
+                'd' => self.browser.duplicate(&vault),
+                's' => {
+                    self.browser.cycle_sort(&mut vault);
+                    browser::Action::None
+                }
+                _ => browser::Action::None,
+            },
+            _ => browser::Action::None,
+        };
+
+        self.vault = Some(vault);
+        self.act_on(action);
+    }
+
+    /// Carry out whatever Files asked for.
+    fn act_on(&mut self, action: browser::Action) {
+        match action {
+            browser::Action::None => {}
+            browser::Action::Say(notice) => {
+                let focused = self.focus.is_some();
+                self.notifications.post(notice, focused);
+            }
+            // §9: opening a `.dpg` belongs to Studio. Studio cannot edit
+            // anything yet (Milestone 4), so détends goes there and says what
+            // it was asked to open rather than pretending to have opened it.
+            browser::Action::OpenDocument(path, kind) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let focused = self.focus.is_some();
+                self.notifications.post(
+                    Notice {
+                        title: name,
+                        detail: format!("Studio {} — not yet editable", kind.name()),
+                        icon: IconShape::Studio,
+                    },
+                    focused,
+                );
+            }
+        }
+    }
+
     fn draw_destination(
         &mut self,
         destination: Destination,
@@ -782,6 +988,21 @@ impl Shell {
                     &self.schedule,
                     stamp,
                     &self.zone,
+                    now,
+                    opacity,
+                    scale,
+                );
+            }
+            // Files is its own environment too, once it has a vault. Without
+            // one it falls through to the placeholder layout below rather than
+            // drawing an empty frame.
+            Destination::Mode(Mode::Files) if self.vault.is_some() => {
+                let vault = self.vault.as_ref().expect("just checked");
+                self.browser.draw(
+                    &mut self.frame,
+                    &self.palette,
+                    area,
+                    vault,
                     now,
                     opacity,
                     scale,
@@ -1244,6 +1465,82 @@ mod tests {
 
         assert_eq!(shell.mode(), Some(Mode::Mail), "a digit navigated");
         assert!(shell.search_is_open());
+    }
+
+    #[test]
+    fn super_q_asks_to_quit_and_escape_never_does() {
+        // The pair matters: Escape must always be safe to press, which is only
+        // true because there is a separate, deliberate way out.
+        let (mut shell, t) = booted();
+        shell.go(t, Mode::Clock);
+
+        press(&mut shell, t, Key::Escape);
+        assert!(shell.take_power_request().is_none(), "Escape quit the system");
+
+        shell.input(
+            t,
+            &Event::KeyDown {
+                key: Key::Character('q'),
+                modifiers: Modifiers { sys: true, ..Default::default() },
+            },
+        );
+        assert_eq!(shell.take_power_request(), Some(Power::ShutDown));
+        assert!(shell.take_power_request().is_none(), "it should be taken once");
+    }
+
+    #[test]
+    fn escape_leaves_every_mode_that_owns_the_keyboard() {
+        // Clock, Files and Home each claim bare keys. Escape is a global
+        // gesture and must reach the shell through all of them — a mode that
+        // swallows it is a mode you cannot get out of.
+        for mode in [Mode::Clock, Mode::Files, Mode::Music] {
+            let (mut shell, t) = booted();
+            shell.go(t, mode);
+            assert_eq!(shell.mode(), Some(mode));
+
+            press(&mut shell, t, Key::Escape);
+            assert_eq!(
+                shell.mode(),
+                None,
+                "Escape did not leave {mode:?} — it was swallowed"
+            );
+        }
+    }
+
+    #[test]
+    fn digits_typed_into_a_files_name_are_text_not_mode_switches() {
+        // The same rule Search follows: 1-5 navigate, but never out of a field
+        // someone is typing a name into. "Week 1" must be a nameable folder.
+        let (mut shell, t) = booted();
+
+        let root = std::env::temp_dir().join(format!(
+            "detends-shell-digits-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        shell.open_vault(root.clone());
+        shell.go(t, Mode::Files);
+
+        shell.show_place(t, Place::Studio);
+        shell.browser_mut().begin_new_folder();
+        for c in "Week ".chars() {
+            press(&mut shell, t, Key::Character(c));
+        }
+        press(&mut shell, t, Key::Mode(1));
+
+        assert_eq!(shell.mode(), Some(Mode::Files), "a digit navigated away");
+
+        press(&mut shell, t, Key::Enter);
+        let names: Vec<String> = shell
+            .browser()
+            .entries()
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        assert_eq!(names, ["Week 1"], "the digit should have been typed");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
