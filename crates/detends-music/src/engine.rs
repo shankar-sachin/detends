@@ -28,6 +28,12 @@ const POLL: Duration = Duration::from_millis(900);
 /// What the worker sends back out of band.
 enum Update {
     Results(Vec<Track>),
+    /// Album artwork, as the bytes came off the wire.
+    ///
+    /// Bytes rather than pixels: decoding belongs with the renderer, which
+    /// already owns a texture registry and knows what format it wants. The
+    /// worker's job is only to do the waiting.
+    Artwork(String, Vec<u8>),
 }
 
 /// The shell's handle on music.
@@ -49,6 +55,8 @@ pub struct Music {
     local: Playback,
     last: Instant,
     results: Vec<Track>,
+    /// Artwork that has arrived and not yet been handed to the renderer.
+    artwork: Option<(String, Vec<u8>)>,
 }
 
 enum Request {
@@ -77,6 +85,9 @@ impl Music {
             .name("detends-music".into())
             .spawn(move || {
                 let mut next_poll = Instant::now();
+                // The artwork already fetched, so a poll every second does not
+                // re-download the same picture sixty times a minute.
+                let mut have_art: Option<String> = None;
                 loop {
                     // Commands first, and all of them: a person pressing next
                     // three times should not wait out three poll intervals.
@@ -107,6 +118,25 @@ impl Music {
 
                     if Instant::now() >= next_poll {
                         let state = provider.poll();
+
+                        // Fetch the artwork when the track changes. On this
+                        // thread, because it is a network round trip and the
+                        // shell must never wait for one.
+                        let wanted = state.track.as_ref().and_then(|t| t.artwork.clone());
+                        if let Some(url) = wanted {
+                            if have_art.as_deref() != Some(url.as_str()) {
+                                match fetch(&url) {
+                                    Ok(bytes) => {
+                                        have_art = Some(url.clone());
+                                        let _ = outbox.send(Update::Artwork(url, bytes));
+                                    }
+                                    Err(why) => log::warn!("artwork: {why}"),
+                                }
+                            }
+                        } else {
+                            have_art = None;
+                        }
+
                         if let Ok(mut shared) = worker_shared.lock() {
                             *shared = state;
                         }
@@ -130,6 +160,7 @@ impl Music {
             local: Playback::default(),
             last: Instant::now(),
             results: Vec::new(),
+            artwork: None,
         }
     }
 
@@ -157,6 +188,7 @@ impl Music {
         while let Ok(update) = self.updates.try_recv() {
             match update {
                 Update::Results(found) => self.results = found,
+                Update::Artwork(url, bytes) => self.artwork = Some((url, bytes)),
             }
         }
 
@@ -205,12 +237,52 @@ impl Music {
     pub fn results(&self) -> &[Track] {
         &self.results
     }
+
+    /// Artwork that has arrived, taken once.
+    ///
+    /// The host decodes it and hands the renderer a texture; the shell only
+    /// ever sees the identifier that comes back.
+    pub fn take_artwork(&mut self) -> Option<(String, Vec<u8>)> {
+        self.artwork.take()
+    }
 }
 
 impl Drop for Music {
     fn drop(&mut self) {
         let _ = self.commands.send(Request::Stop);
     }
+}
+
+
+/// Download an image.
+///
+/// Capped, because this runs on a worker that a stuck connection would hold
+/// open: a cover is a few hundred kilobytes and anything claiming to be far
+/// more is not a cover.
+///
+/// Public so the artwork path can be exercised end to end from outside,
+/// against the real service, rather than only in pieces.
+pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    const LIMIT: u64 = 4 * 1024 * 1024;
+
+    let response = ureq::get(url)
+        .timeout(Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("could not fetch {url}: {e}"))?;
+
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(LIMIT)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("could not read {url}: {e}"))?;
+
+    if bytes.is_empty() {
+        return Err(format!("{url} was empty"));
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]

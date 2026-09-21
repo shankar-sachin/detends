@@ -5,7 +5,7 @@ One thing at a time.**
 
 Helium 2.1 replaced the five modes with apps, windows and a dock. The modes were
 environments you switched between; apps are things you open, move and close. What
-survived the change is the restraint: six apps, fixed, no installing, and one
+survived the change is the restraint: seven apps, fixed, no installing, and one
 window at a time owning attention.
 
 Releases are named for the elements, in order. This is **Helium** (v2.x);
@@ -39,7 +39,7 @@ without putting anyone's filenames in it.
 | | |
 |---|---|
 | **Boot** | The mark flies in, holds, unfolds into the wordmark as the workspace rises behind it |
-| **Dock** | Surf · Spotify · Files · Clock · Mail · Studio, opened with `Super+1…6` |
+| **Dock** | Surf · Spotify · Files · Clock · Mail · Studio · Settings, opened with `Super+1…7` |
 | **Windows** | Draggable, with minimise and close. No maximise, no tiling, no resize |
 | **Status cluster** | Focus · Network · Battery · Time. Simplifies itself under Airplane Mode |
 | **System Center** | Grows out of the cluster. States only — no screenshot button |

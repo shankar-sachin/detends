@@ -385,6 +385,11 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let now = self.clock.tick();
                 let first_frame = !self.shown;
+
+                // Before building the frame, so a cover that arrived since the
+                // last one is on screen in this one rather than the next.
+                Self::upload_artwork(shell, renderer);
+
                 let out = shell.tick(now);
                 let animating = out.frame.animating;
                 let env = environment(out.environment, now);
@@ -455,15 +460,29 @@ impl App {
                 .copied()
                 .find(|a| a.name().to_lowercase().starts_with(&wanted));
 
-            match app {
-                Some(app) => {
-                    while t < 6.0 {
-                        t += step;
-                        shell.tick(t);
+            // A comma-separated list, so a capture can show several windows
+            // stacked — which is the only way to see how they layer.
+            while t < 6.0 {
+                t += step;
+                shell.tick(t);
+            }
+            let _ = app;
+            for wanted in name.split(',') {
+                let wanted = wanted.trim().to_lowercase();
+                match detends_shell::App::ALL
+                    .iter()
+                    .copied()
+                    .find(|a| a.name().to_lowercase().starts_with(&wanted))
+                {
+                    Some(app) => {
+                        shell.open(t, app);
+                        for _ in 0..40 {
+                            t += step;
+                            shell.tick(t);
+                        }
                     }
-                    shell.open(t, app);
+                    None => log::warn!("no app called {wanted:?}"),
                 }
-                None => log::warn!("no app called {name:?}"),
             }
         } else {
             // Always let boot finish, so a capture is of the settled shell.
@@ -594,6 +613,28 @@ impl App {
     /// compositor and a session manager that détends does not have yet, so they
     /// say so rather than pretending. Whatever happens, Clock's state is
     /// written out first — an alarm set before a restart is still set after.
+    /// Hand the renderer any album art that has arrived.
+    ///
+    /// Once per picture: the identifier is kept so the same cover is not
+    /// decoded and uploaded again every time the track is polled.
+    fn upload_artwork(shell: &mut Shell, renderer: &mut Renderer) {
+        let Some((url, bytes)) = shell.take_artwork() else {
+            return;
+        };
+
+        match decode_artwork(&bytes) {
+            Some((rgba, width, height)) => {
+                let id = renderer.load_image("album-art", &rgba, width, height);
+                shell.set_artwork(Some(id));
+                log::debug!("artwork {width}×{height} from {url}");
+            }
+            None => {
+                log::warn!("could not decode artwork from {url}");
+                shell.set_artwork(None);
+            }
+        }
+    }
+
     fn act_on_power(
         power: detends_shell::Power,
         shell: &mut Shell,
@@ -733,6 +774,53 @@ fn environment(state: detends_shell::EnvironmentState, now: f64) -> Environment 
 const MARK_SHORT: &[u8] = include_bytes!("../../../assets/brand/mark-short.png");
 const MARK_FULL: &[u8] = include_bytes!("../../../assets/brand/mark-full.png");
 
+/// Decode album artwork, whatever format it arrived in.
+///
+/// Spotify serves JPEG; a local file might be a PNG. Sniffed by magic number
+/// rather than by the URL's extension, because a CDN's path says nothing
+/// reliable about what it hands back.
+fn decode_artwork(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    // PNG: the eight-byte signature.
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder.read_info().ok()?;
+        let mut buffer = vec![0; reader.output_buffer_size()?];
+        let info = reader.next_frame(&mut buffer).ok()?;
+        if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+            return None;
+        }
+        buffer.truncate(info.buffer_size());
+        return Some((buffer, info.width, info.height));
+    }
+
+    // JPEG: SOI.
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        let mut decoder = zune_jpeg::JpegDecoder::new(bytes);
+        let pixels = decoder.decode().ok()?;
+        let info = decoder.info()?;
+        let (w, h) = (info.width as usize, info.height as usize);
+
+        // The renderer wants RGBA8; JPEG gives three channels.
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        match pixels.len() / (w * h) {
+            3 => {
+                for chunk in pixels.chunks_exact(3) {
+                    rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+                }
+            }
+            1 => {
+                for grey in &pixels {
+                    rgba.extend_from_slice(&[*grey, *grey, *grey, 255]);
+                }
+            }
+            _ => return None,
+        }
+        return Some((rgba, info.width as u32, info.height as u32));
+    }
+
+    None
+}
+
 /// Decode a PNG and hand it to the renderer, returning its id and aspect ratio.
 fn load_brand_image(
     renderer: &mut Renderer,
@@ -796,5 +884,83 @@ fn seed_capture_vault(root: &std::path::Path) {
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::write(&path, body.as_bytes());
+    }
+}
+
+/// Proving the album-art path against the real service.
+///
+/// Ignored by default: it needs a signed-in Spotify account and the network,
+/// neither of which a checkout has. Run it deliberately:
+///
+/// ```sh
+/// cargo test -p detends-host --release -- --ignored --nocapture artwork
+/// ```
+///
+/// It exercises the whole chain rather than a piece of it — refresh the token,
+/// ask what is playing, fetch the cover off Spotify's CDN, and decode it with
+/// the same function the shell uses. Anything short of that proves nothing
+/// about whether a picture ends up on screen.
+#[cfg(test)]
+mod artwork_check {
+    use super::*;
+    use detends_music::{Command, Provider, SpotifyProvider};
+
+    #[test]
+    #[ignore = "needs a signed-in Spotify account and the network"]
+    fn the_whole_artwork_path_works_against_spotify() {
+        let mut provider = SpotifyProvider::from_default_path();
+
+        match provider.execute(Command::Connect) {
+            Ok(()) => println!("connected"),
+            Err(why) => panic!("could not connect: {why}"),
+        }
+
+        let state = provider.poll();
+        println!("status:   {:?}", state.status);
+        println!("device:   {:?}", state.device);
+
+        // Whatever is playing, or failing that anything saved. The decode
+        // path does not care where the cover came from, and requiring someone
+        // to press play before the test means anything is a poor test.
+        let track = match state.track {
+            Some(track) => track,
+            None => {
+                println!("nothing playing; taking a cover from the saved library");
+                provider
+                    .library()
+                    .into_iter()
+                    .find(|t| t.artwork.is_some())
+                    .expect("no saved track has artwork")
+            }
+        };
+
+        println!("track:    {} — {}", track.title, track.artist);
+        println!("album:    {}", track.album);
+
+        let Some(url) = track.artwork else {
+            panic!("the track has no artwork URL");
+        };
+        println!("artwork:  {url}");
+
+        let bytes = detends_music::fetch(&url).expect("fetch the cover");
+        println!("bytes:    {}", bytes.len());
+
+        let (rgba, width, height) = decode_artwork(&bytes).expect("decode the cover");
+
+        println!("decoded:  {width}×{height}");
+        assert!(width > 0 && height > 0);
+        assert_eq!(
+            rgba.len(),
+            width as usize * height as usize * 4,
+            "the decoded buffer is not RGBA8 at the stated size"
+        );
+        // A real cover is not one flat colour.
+        let first = &rgba[..4];
+        assert!(
+            rgba.chunks_exact(4).any(|p| p != first),
+            "the decoded image is a single flat colour"
+        );
+        println!();
+        println!("the cover decoded to RGBA8 and is not blank");
     }
 }

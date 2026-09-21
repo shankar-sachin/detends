@@ -21,6 +21,7 @@ pub enum App {
     Clock,
     Mail,
     Studio,
+    Settings,
 }
 
 impl App {
@@ -28,13 +29,14 @@ impl App {
     ///
     /// Surf first because it is the one that gets opened most in a system that
     /// has a browser at all, then the rest in the order they were built.
-    pub const ALL: [App; 6] = [
+    pub const ALL: [App; 7] = [
         App::Surf,
         App::Spotify,
         App::Files,
         App::Clock,
         App::Mail,
         App::Studio,
+        App::Settings,
     ];
 
     /// What it is called on screen.
@@ -50,6 +52,7 @@ impl App {
             App::Clock => "Clock",
             App::Mail => "Mail",
             App::Studio => "Studio",
+            App::Settings => "Settings",
         }
     }
 
@@ -61,6 +64,7 @@ impl App {
             App::Clock => IconShape::Clock,
             App::Mail => IconShape::Mail,
             App::Studio => IconShape::Studio,
+            App::Settings => IconShape::Brightness,
         }
     }
 
@@ -71,7 +75,7 @@ impl App {
     /// system look finished and behave as though it were, which is worse than
     /// being visibly partway.
     pub fn built(self) -> bool {
-        matches!(self, App::Spotify | App::Files | App::Clock)
+        matches!(self, App::Spotify | App::Files | App::Clock | App::Settings)
     }
 
     /// How large a window wants to be, as a fraction of the workspace.
@@ -87,6 +91,8 @@ impl App {
             App::Clock => (0.40, 0.52),
             App::Mail => (0.66, 0.74),
             App::Studio => (0.72, 0.78),
+            // A column of a few controls. Wider would be empty space.
+            App::Settings => (0.34, 0.66),
         }
     }
 }

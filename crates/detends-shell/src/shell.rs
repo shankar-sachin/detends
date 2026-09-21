@@ -15,6 +15,7 @@ use crate::clockface::{self, ClockFace, Section};
 use crate::notify::{Notice, Notifications};
 use crate::nowplaying;
 use crate::search::{self, Command, Power, Search};
+use crate::settings;
 use crate::status;
 use crate::system::{Focus, System, FOCUS_DURATIONS};
 use crate::wallpaper;
@@ -73,6 +74,8 @@ pub struct Shell {
     windows: Windows,
     /// Which dock slot the pointer is over, if any.
     dock_hover: Option<App>,
+    /// A Settings slider being dragged.
+    settings_drag: Option<settings::Control>,
     system: System,
     focus: Option<Focus>,
     clock: Clock,
@@ -94,6 +97,8 @@ pub struct Shell {
     /// `None` until a provider is chosen, so the shell still builds frames —
     /// and still tests — without starting a thread or touching the network.
     music: Option<Music>,
+    /// The cover for whatever is playing, once the host has uploaded it.
+    artwork: Option<TextureId>,
     /// The vault behind Files. `None` until a root is given, so the shell
     /// still runs — and still tests — without touching a disk.
     vault: Option<Vault>,
@@ -133,6 +138,7 @@ impl Shell {
             boot: Boot::new(now),
             windows: Windows::new(),
             dock_hover: None,
+            settings_drag: None,
             system: System::default(),
             focus: None,
             clock: Clock::system(),
@@ -148,6 +154,7 @@ impl Shell {
             clock_face: ClockFace::new(),
             browser: Browser::new(),
             music: None,
+            artwork: None,
             vault: None,
             schedule: Schedule::new(),
             notifications: Notifications::new(),
@@ -250,6 +257,19 @@ impl Shell {
 
     pub fn music(&self) -> Option<&Music> {
         self.music.as_ref()
+    }
+
+    /// Artwork bytes that have arrived and need decoding, taken once.
+    ///
+    /// The shell cannot decode a JPEG and has no business trying: it hands the
+    /// bytes to the host and gets a texture identifier back.
+    pub fn take_artwork(&mut self) -> Option<(String, Vec<u8>)> {
+        self.music.as_mut().and_then(|m| m.take_artwork())
+    }
+
+    /// The cover to draw, or `None` to fall back to the placeholder.
+    pub fn set_artwork(&mut self, texture: Option<TextureId>) {
+        self.artwork = texture;
     }
 
     pub fn open_vault(&mut self, root: std::path::PathBuf) {
@@ -675,6 +695,7 @@ impl Shell {
                     self.pending_volume = Some(self.system.volume);
                 }
                 self.dragging = None;
+                self.settings_drag = None;
                 self.windows.release();
             }
 
@@ -682,7 +703,14 @@ impl Shell {
             // lights up whatever is under it.
             Event::PointerMoved { x, y } => {
                 let at = Vec2 { x: *x, y: *y };
-                if self.windows.is_dragging() {
+                if let Some(control) = self.settings_drag {
+                    if let Some(window) =
+                        self.windows.focused().filter(|w| w.app == App::Settings).cloned()
+                    {
+                        let area = window.content().inset(space::ROOM);
+                        self.change_setting(control, area, at);
+                    }
+                } else if self.windows.is_dragging() {
                     self.windows.drag_to(at, self.size);
                 } else {
                     self.dock_hover = dock::hit(self.size, at);
@@ -758,7 +786,39 @@ impl Shell {
                     }
                 }
             }
+            App::Settings => {
+                if let Some(control) = settings::hit(area, at) {
+                    self.change_setting(control, area, at);
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Apply a change made in Settings (§18).
+    ///
+    /// Every control takes effect the moment it is touched. There is no Apply
+    /// and nothing to save: a setting you have to confirm is a setting you
+    /// cannot try.
+    fn change_setting(&mut self, control: settings::Control, area: Rect, at: Vec2) {
+        match control {
+            settings::Control::Appearance(mode) => {
+                let prefers_dark = self.prefers_dark;
+                self.set_appearance(mode, prefers_dark);
+            }
+            settings::Control::Motion(preference) => self.motion = preference,
+            settings::Control::Glass => {
+                if let Some(v) = settings::slider_value(area, control, at) {
+                    self.glass.intensity = v;
+                    self.settings_drag = Some(control);
+                }
+            }
+            settings::Control::Transparency => {
+                if let Some(v) = settings::slider_value(area, control, at) {
+                    self.glass.transparency = v;
+                    self.settings_drag = Some(control);
+                }
+            }
         }
     }
 
@@ -900,6 +960,7 @@ impl Shell {
         self.boot.draw(&mut self.frame, &self.palette, now);
 
         if self.boot.animating(now)
+            || !self.windows.settled(now)
             || !self.hush.at_rest(now)
             || !self.search_presence.at_rest(now)
             || !self.center_presence.at_rest(now)
@@ -1035,16 +1096,41 @@ impl Shell {
             // belongs to one thing, which is the part of the five-modes idea
             // worth keeping now that there are several windows.
             let front = Some(window.id) == focused;
-            let opacity = recede * if front { 1.0 } else { 0.62 };
+            let (arrived, scale) = window.arrival(now);
+            let opacity = recede * arrived * if front { 1.0 } else { 0.62 };
             if opacity <= 0.004 {
                 continue;
             }
+
+            // Scaled about its own centre, so it settles in place rather than
+            // sliding in from somewhere it never was.
+            let mut window = window;
+            window.rect = Rect::from_center_size(window.rect.center, window.rect.size() * scale);
 
             self.draw_window(&window, front, opacity, now, time);
         }
     }
 
-    /// One window: its glass, its bar, its lights, and whatever it holds.
+    /// One window.
+    ///
+    /// The focused window and the ones behind it are drawn by different rules,
+    /// and the reason is the renderer rather than taste. Within one layer the
+    /// glass pass runs *before* text and icons, so anything written in a layer
+    /// lands on top of every glass surface in that same layer — including
+    /// glass belonging to a window in front of it. Three windows drawing into
+    /// one layer put all three apps' contents on top of one another, which is
+    /// exactly what happened.
+    ///
+    /// So the stack is expressed in layers, not in z:
+    ///
+    /// - Windows behind are flat frosted panels, drawn whole — panel, bar and
+    ///   name — in [`Layer::Environment`]. No glass, so nothing to fight.
+    /// - The focused window has [`Layer::Content`] to itself: its glass, then
+    ///   its chrome and its app over the top, in that order, correctly.
+    ///
+    /// Which also means only one app draws at a time. For a system built
+    /// around one thing owning attention that is the right behaviour anyway,
+    /// but it is worth being clear that it is a constraint first.
     fn draw_window(
         &mut self,
         window: &crate::window::Window,
@@ -1053,43 +1139,49 @@ impl Shell {
         now: Seconds,
         time: &TimeOfDay,
     ) {
-        use detends_paint::{Fill, Icon, IconShape, Text, ICON_STROKE};
+        use detends_paint::{Fill, Icon, Text, ICON_STROKE};
 
-        frame_glass(&mut self.frame, &self.palette, window.rect, front, opacity);
+        let layer = if front {
+            Layer::Content
+        } else {
+            Layer::Environment
+        };
 
-        // The two lights, top right. Colour is the whole signal here, so these
-        // are the one place in détends that uses a hue for its own sake —
-        // everybody already knows what the red one does.
-        for (index, (rect, colour)) in [
-            (window.minimize_button(), Color::hex(0xE0B341)),
-            (window.close_button(), Color::hex(0xE05A47)),
-        ]
-        .iter()
-        .enumerate()
-        {
-            self.frame.push(
-                Item::new(
-                    Id::of("window-light").nth(window.id.0 * 4 + index as u64),
-                    Layer::Content,
-                    Primitive::Fill(Fill {
-                        rect: Rect::from_center_size(rect.center, Vec2::splat(12.0)),
-                        radius: 6.0,
-                        squircle: 2.0,
-                        // Dimmed on an unfocused window, so only the window you
-                        // are in advertises what can be done to it.
-                        color: if front { *colour } else { colour.fade(0.35) },
-                    }),
-                )
-                .opacity(opacity)
-                .z(6),
-            );
-        }
+        frame_glass(
+            &mut self.frame,
+            &self.palette,
+            window.id,
+            window.rect,
+            front,
+            opacity,
+        );
 
         let bar = window.titlebar();
+
+        // A hairline under the bar, so the chrome is separated from the app by
+        // a line rather than by a change of material.
+        self.frame.push(
+            Item::new(
+                Id::of("window-rule").nth(window.id.0),
+                layer,
+                Primitive::Fill(Fill {
+                    rect: Rect::from_min_size(
+                        Vec2 { x: bar.min().x, y: bar.max().y },
+                        Vec2 { x: bar.width(), y: 1.0 },
+                    ),
+                    radius: 0.0,
+                    squircle: 2.0,
+                    color: self.palette.text_faint.fade(0.18),
+                }),
+            )
+            .opacity(opacity)
+            .z(5),
+        );
+
         self.frame.push(
             Item::new(
                 Id::of("window-icon").nth(window.id.0),
-                Layer::Content,
+                layer,
                 Primitive::Icon(Icon {
                     rect: Rect::from_center_size(
                         Vec2 { x: bar.min().x + 20.0, y: bar.center.y },
@@ -1108,12 +1200,11 @@ impl Shell {
         self.frame.push(
             Item::new(
                 Id::of("window-title").nth(window.id.0),
-                Layer::Content,
+                layer,
                 Primitive::Text(Text {
                     text: window.app.name().into(),
                     // Left-aligned text starts at the rect's left edge, so the
-                    // rect is centred half its width to the right of where the
-                    // title should begin.
+                    // rect begins where the title should.
                     rect: Rect::from_min_size(
                         Vec2 {
                             x: bar.min().x + 38.0,
@@ -1136,6 +1227,39 @@ impl Shell {
             .z(6),
         );
 
+        // The two lights. Colour is the whole signal, so this is the one place
+        // in détends that uses hue for its own sake — everyone already knows
+        // what the red one does.
+        for (index, (rect, colour)) in [
+            (window.minimize_button(), Color::hex(0xE0B341)),
+            (window.close_button(), Color::hex(0xE05A47)),
+        ]
+        .iter()
+        .enumerate()
+        {
+            self.frame.push(
+                Item::new(
+                    Id::of("window-light").nth(window.id.0 * 4 + index as u64),
+                    layer,
+                    Primitive::Fill(Fill {
+                        rect: Rect::from_center_size(rect.center, Vec2::splat(12.0)),
+                        radius: 6.0,
+                        squircle: 2.0,
+                        // Only the window you are in advertises what can be
+                        // done to it.
+                        color: if front { *colour } else { colour.fade(0.28) },
+                    }),
+                )
+                .opacity(opacity)
+                .z(6),
+            );
+        }
+
+        // Only the focused window runs its app.
+        if !front {
+            return;
+        }
+
         let area = window.content().inset(space::ROOM);
 
         match window.app {
@@ -1157,18 +1281,38 @@ impl Shell {
             App::Spotify if self.music.is_some() => {
                 let music = self.music.as_mut().expect("just checked");
                 let state = music.state().clone();
-                nowplaying::draw(&mut self.frame, &self.palette, area, &state, now, opacity, 1.0);
+                nowplaying::draw(
+                    &mut self.frame,
+                    &self.palette,
+                    area,
+                    &state,
+                    self.artwork,
+                    now,
+                    opacity,
+                    1.0,
+                );
             }
             App::Files if self.vault.is_some() => {
                 let vault = self.vault.as_ref().expect("just checked");
                 self.browser
                     .draw(&mut self.frame, &self.palette, area, vault, now, opacity, 1.0);
             }
-            // Not built yet. The window still opens and says what it will be,
-            // rather than the app being hidden until it works — a system that
-            // looks finished and is not is worse than one visibly partway.
+            App::Settings => {
+                settings::draw(
+                    &mut self.frame,
+                    &self.palette,
+                    area,
+                    self.appearance,
+                    self.glass,
+                    self.motion,
+                    detends_native::backend(),
+                    opacity,
+                );
+            }
+            // Not built yet. The window still opens and says what it will be:
+            // a system that looks finished and is not is worse than one
+            // visibly partway.
             other => {
-                let _ = IconShape::Music;
                 self.frame.push(
                     Item::new(
                         Id::of("window-empty").nth(window.id.0),
@@ -1344,33 +1488,49 @@ impl Shell {
 /// problem and no layer left to solve it with. Behind the front one a window
 /// becomes a flat translucent panel — cheaper, and it says plainly which
 /// window you are in.
-fn frame_glass(frame: &mut Frame, palette: &Palette, rect: Rect, front: bool, opacity: f32) {
+fn frame_glass(
+    frame: &mut Frame,
+    palette: &Palette,
+    window: crate::window::WindowId,
+    rect: Rect,
+    front: bool,
+    opacity: f32,
+) {
     use detends_paint::{Fill, Glass};
 
-    let id = Id::of("window-glass").nth(rect.min().x as u64 ^ ((rect.min().y as u64) << 20));
+    // Keyed on the window, not on where it is. An id derived from position
+    // changes on every frame of a drag, which throws away the renderer's
+    // cached work for it exactly while it is moving.
+    let id = Id::of("window-glass").nth(window.0);
 
     if front {
         frame.push(
             Item::new(
                 id,
-                Layer::Environment,
+                Layer::Content,
                 Primitive::Glass(Glass {
                     rect,
                     radius: 18.0,
                     squircle: 5.0,
                     thickness: 16.0,
                     bevel: 26.0,
-                    ior: 1.48,
-                    dispersion: 0.018,
-                    frost: 0.78,
-                    tint: palette.glass,
-                    rim: 0.95,
+                    ior: 1.42,
+                    dispersion: 0.012,
+                    // Heavily frosted, and tinted far more than a small pane
+                    // would be. A window is most of the screen: at the
+                    // transparency that suits a control panel you can read the
+                    // wallpaper through your own document, and every window
+                    // behind it as well.
+                    frost: 0.94,
+                    tint: palette.window,
+                    rim: 0.9,
                 }),
             )
             .opacity(opacity)
             .z(4),
         );
     } else {
+        // Flat, and solid enough to be a surface rather than a stain.
         frame.push(
             Item::new(
                 id,
@@ -1379,7 +1539,7 @@ fn frame_glass(frame: &mut Frame, palette: &Palette, rect: Rect, front: bool, op
                     rect,
                     radius: 18.0,
                     squircle: 5.0,
-                    color: palette.ground.fade(0.72),
+                    color: palette.window_back,
                 }),
             )
             .opacity(opacity)
@@ -2049,27 +2209,87 @@ mod tests {
     }
 
     #[test]
-    fn the_focused_window_is_brighter_than_the_one_behind_it() {
-        // What replaced "one mode at a time": attention still belongs to one
-        // window, and the others say so by receding.
+    fn the_window_behind_is_drawn_in_a_lower_layer_than_the_one_in_front() {
+        // The fix for three apps' contents landing on top of one another.
+        // Within a layer the renderer draws glass before text, so a window
+        // behind cannot share a layer with the one in front — the stack has to
+        // be expressed in layers.
         let (mut shell, t) = booted();
         shell.open(t, App::Clock);
         shell.open(t, App::Files);
-        let frame = shell.tick(t + 1.0).frame;
+        let frame = shell.tick(t + 4.0).frame;
 
-        let glass: Vec<f32> = frame
+        // Exactly one window pane is glass, and it is the focused one, in
+        // Content. (The status cluster is glass too, which is why this looks
+        // for the window's own id rather than counting glass.)
+        let panes: Vec<&detends_paint::Item> = frame
             .items
             .iter()
-            .filter(|i| i.layer == detends_paint::Layer::Environment)
-            .filter(|i| !matches!(i.primitive, Primitive::Image(_)))
-            .map(|i| i.opacity)
+            .filter(|i| matches!(i.primitive, Primitive::Glass(_)))
+            .filter(|i| {
+                (1..=4).any(|n| i.id == detends_paint::Id::of("window-glass").nth(n))
+            })
             .collect();
+        assert_eq!(panes.len(), 1, "expected exactly one focused pane");
+        assert_eq!(panes[0].layer, detends_paint::Layer::Content);
+        let front = panes;
 
-        assert_eq!(glass.len(), 2, "expected two window panes, got {glass:?}");
+        // The one behind is a flat panel down in Environment, and dimmer.
+        // Found by id, since its bar and its lights are Fills as well.
+        let behind: Vec<&detends_paint::Item> = frame
+            .items
+            .iter()
+            .filter(|i| matches!(i.primitive, Primitive::Fill(_)))
+            .filter(|i| {
+                (1..=4).any(|n| i.id == detends_paint::Id::of("window-glass").nth(n))
+            })
+            .collect();
+        assert_eq!(behind.len(), 1, "expected one panel behind");
+        assert_eq!(behind[0].layer, detends_paint::Layer::Environment);
         assert!(
-            glass.iter().any(|o| *o > 0.9) && glass.iter().any(|o| *o < 0.9),
-            "both windows are drawn at the same strength: {glass:?}"
+            behind[0].opacity < front[0].opacity,
+            "the window behind is not receding: {} vs {}",
+            behind[0].opacity,
+            front[0].opacity
         );
+    }
+
+    #[test]
+    fn only_the_focused_window_runs_its_app() {
+        // Two apps drawing at once is what put Surf's text inside Spotify.
+        let (mut shell, t) = booted();
+        shell.use_local_music();
+        shell.open(t, App::Spotify);
+        shell.open(t, App::Surf);
+        let s = texts(shell.tick(t + 4.0).frame);
+
+        assert!(s.iter().any(|x| x.contains("Surf has no engine")), "{s:?}");
+        assert!(
+            !s.iter().any(|x| x == "Resonance"),
+            "the window behind is still drawing its app: {s:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_arrives_rather_than_appearing() {
+        let (mut shell, t) = booted();
+        shell.open(t, App::Clock);
+
+        let opacity_of = |shell: &mut Shell, at: Seconds| {
+            shell
+                .tick(at)
+                .frame
+                .items
+                .iter()
+                .find(|i| i.id == detends_paint::Id::of("window-glass").nth(1))
+                .map(|i| i.opacity)
+                .expect("the window pane")
+        };
+
+        let arriving = opacity_of(&mut shell, t + 0.02);
+        let settled = opacity_of(&mut shell, t + 3.0);
+        assert!(arriving < settled, "it appeared instead of arriving");
+        assert!(settled > 0.9);
     }
 
     #[test]

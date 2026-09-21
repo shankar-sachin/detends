@@ -11,6 +11,7 @@ pub mod input;
 pub mod notify;
 pub mod nowplaying;
 pub mod search;
+pub mod settings;
 pub mod shell;
 pub mod status;
 pub mod system;

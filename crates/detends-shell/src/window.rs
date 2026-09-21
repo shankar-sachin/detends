@@ -15,7 +15,7 @@
 //! — attention still belongs to one thing.
 
 use crate::app::App;
-use detends_paint::{Rect, Seconds, Vec2};
+use detends_paint::{springs, Rect, Seconds, Spring, Vec2};
 
 /// Identifies one open window.
 ///
@@ -46,6 +46,12 @@ pub struct Window {
     pub id: WindowId,
     pub app: App,
     pub rect: Rect,
+    /// How far the window has arrived, 0 to 1.
+    ///
+    /// A window that simply appears is the single cheapest way to make a
+    /// system feel unfinished — nothing in the real world does that. It grows
+    /// from slightly small and fades in, which also says where it came from.
+    pub presence: Spring<f32>,
     /// Out of the way but still running.
     ///
     /// A minimised window keeps its place in the stack and its dot in the dock;
@@ -56,6 +62,16 @@ pub struct Window {
 }
 
 impl Window {
+    /// How far through its arrival, and the scale that goes with it.
+    ///
+    /// It grows from 96%, not from nothing: a window that scales up from a
+    /// point reads as a magic trick, where a small movement reads as the thing
+    /// settling into place.
+    pub fn arrival(&self, now: Seconds) -> (f32, f32) {
+        let presence = self.presence.value(now).clamp(0.0, 1.0);
+        (presence, 0.96 + presence * 0.04)
+    }
+
     /// The strip along the top that carries the name and drags the window.
     pub fn titlebar(&self) -> Rect {
         Rect::from_min_size(
@@ -159,6 +175,10 @@ impl Windows {
     pub fn minimize(&mut self, id: WindowId, now: Seconds) {
         if let Some(window) = self.open.iter_mut().find(|w| w.id == id) {
             window.minimized = true;
+            // Reset, so bringing it back plays the arrival again rather than
+            // having it blink into place already settled.
+            window.presence.reset(now, 0.0);
+            window.presence.target(now, 1.0);
         }
         self.dragging = None;
         self.changed_at = now;
@@ -187,7 +207,11 @@ impl Windows {
             let id = self.open[index].id;
             // The dock is the only way back from minimised, so launching has
             // to restore rather than merely focus.
-            self.open[index].minimized = false;
+            if self.open[index].minimized {
+                self.open[index].minimized = false;
+                self.open[index].presence.reset(now, 0.0);
+                self.open[index].presence.target(now, 1.0);
+            }
             self.focus(id, now);
             return id;
         }
@@ -209,10 +233,14 @@ impl Windows {
         let id = WindowId(self.next_id);
         self.next_id += 1;
 
+        let mut presence = Spring::new(springs::SETTLE, 0.0);
+        presence.target(now, 1.0);
+
         let mut window = Window {
             id,
             app,
             rect: Rect::from_center_size(centre, size),
+            presence,
             minimized: false,
         };
         Self::keep_on_screen(&mut window, workspace);
@@ -325,6 +353,11 @@ impl Windows {
 
     pub fn is_dragging(&self) -> bool {
         self.dragging.is_some()
+    }
+
+    /// Whether any window is still arriving.
+    pub fn settled(&self, now: Seconds) -> bool {
+        self.open.iter().all(|w| w.presence.at_rest(now))
     }
 
     /// Nudge a window back until enough of it is on screen to grab again.

@@ -27,8 +27,8 @@
 
 use detends_music::{Command, Playback, Repeat, Status};
 use detends_paint::{
-    space, text, Align, Color, Fill, Frame, Glass, Icon, IconShape, Id, Item, Layer, Palette,
-    Primitive, Rect, Seconds, Text, TextStyle, Vec2, ICON_STROKE,
+    space, text, Align, Color, Fill, Frame, Icon, IconShape, Id, Image, Item, Layer, Palette,
+    Primitive, Rect, Seconds, Text, TextStyle, TextureId, Vec2, ICON_STROKE,
 };
 
 /// Something in Music that can be pressed.
@@ -167,6 +167,7 @@ pub fn draw(
     palette: &Palette,
     area: Rect,
     state: &Playback,
+    artwork: Option<TextureId>,
     _now: Seconds,
     opacity: f32,
     scale: f32,
@@ -210,50 +211,72 @@ pub fn draw(
 
     let layout = layout(area);
 
-    // The artwork panel. A pane of glass until there is a picture to put in
-    // it — an empty rectangle with a music mark in the middle is honest about
-    // having no artwork, where a grey box just looks broken.
-    frame.push(
-        Item::new(
-            Id::of("music-artwork"),
-            Layer::Content,
-            Primitive::Glass(Glass {
-                rect: Rect::from_center_size(
-                    about(layout.artwork.center),
-                    layout.artwork.size() * scale,
-                ),
-                radius: 18.0 * scale,
-                squircle: 5.0,
-                thickness: 16.0,
-                bevel: 24.0,
-                ior: 1.48,
-                dispersion: 0.018,
-                frost: 0.6,
-                tint: palette.glass,
-                rim: 0.9,
-            }),
-        )
-        .opacity(opacity),
-    );
+    // The cover.
+    //
+    // Deliberately *not* a pane of glass. It sits inside a window that is
+    // already glass, and two glass surfaces overlapping in one layer cannot
+    // composite — the earlier version drew one here and it came out as a
+    // smudge. A record sleeve is a printed thing anyway.
+    let cover = Rect::from_center_size(about(layout.artwork.center), layout.artwork.size() * scale);
 
-    frame.push(
-        Item::new(
-            Id::of("music-artwork-mark"),
-            Layer::Content,
-            Primitive::Icon(Icon {
-                rect: Rect::from_center_size(
-                    about(layout.artwork.center),
-                    Vec2::splat(layout.artwork.width() * 0.22) * scale,
-                ),
-                shape: IconShape::Music,
-                stroke: ICON_STROKE,
-                color: palette.text_faint.fade(0.5),
-                rim: 0.3,
-            }),
-        )
-        .opacity(opacity)
-        .z(1),
-    );
+    match artwork {
+        Some(texture) => {
+            frame.push(
+                Item::new(
+                    Id::of("music-artwork"),
+                    Layer::Content,
+                    Primitive::Image(Image {
+                        rect: cover,
+                        texture,
+                        source: Rect::from_min_size(
+                            Vec2 { x: 0.0, y: 0.0 },
+                            Vec2 { x: 1.0, y: 1.0 },
+                        ),
+                        radius: 14.0 * scale,
+                        squircle: 5.0,
+                        tint: Color::WHITE,
+                    }),
+                )
+                .opacity(opacity)
+                .z(1),
+            );
+        }
+        None => {
+            frame.push(
+                Item::new(
+                    Id::of("music-artwork"),
+                    Layer::Content,
+                    Primitive::Fill(Fill {
+                        rect: cover,
+                        radius: 14.0 * scale,
+                        squircle: 5.0,
+                        color: palette.text_faint.fade(0.10),
+                    }),
+                )
+                .opacity(opacity)
+                .z(1),
+            );
+
+            frame.push(
+                Item::new(
+                    Id::of("music-artwork-mark"),
+                    Layer::Content,
+                    Primitive::Icon(Icon {
+                        rect: Rect::from_center_size(
+                            about(layout.artwork.center),
+                            Vec2::splat(layout.artwork.width() * 0.22) * scale,
+                        ),
+                        shape: IconShape::Music,
+                        stroke: ICON_STROKE,
+                        color: palette.text_faint.fade(0.5),
+                        rim: 0.3,
+                    }),
+                )
+                .opacity(opacity)
+                .z(2),
+            );
+        }
+    }
 
     // Title and artist, or whatever the status has to say instead.
     let title_y = layout.artwork.max().y + space::WIDE;
@@ -518,7 +541,7 @@ mod tests {
 
     fn strings(state: &Playback) -> Vec<String> {
         let mut frame = Frame::new(vec2(1512.0, 982.0), 2.0);
-        draw(&mut frame, &Palette::dark(), area(), state, 0.0, 1.0, 1.0);
+        draw(&mut frame, &Palette::dark(), area(), state, None, 0.0, 1.0, 1.0);
         frame
             .items
             .iter()
@@ -541,7 +564,7 @@ mod tests {
     fn the_provider_is_named_but_last() {
         // §4: visible, but visually secondary.
         let mut frame = Frame::new(vec2(1512.0, 982.0), 2.0);
-        draw(&mut frame, &Palette::dark(), area(), &playing(), 0.0, 1.0, 1.0);
+        draw(&mut frame, &Palette::dark(), area(), &playing(), None, 0.0, 1.0, 1.0);
 
         let y_of = |needle: &str| {
             frame

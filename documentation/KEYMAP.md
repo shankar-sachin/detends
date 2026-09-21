@@ -9,8 +9,8 @@ identical on both.
 
 | | |
 |---|---|
-| `Super + 1` … `Super + 6` | The dock, left to right: Surf · Spotify · Files · Clock · Mail · Studio |
-| `1` … `6` | The same, when nothing is being typed into |
+| `Super + 1` … `Super + 7` | The dock, left to right: Surf · Spotify · Files · Clock · Mail · Studio · Settings |
+| `1` … `7` | The same, when nothing is being typed into |
 | `Super + W` | Close the window in front |
 | `Super + M` | Put it away — it stays in the dock |
 | `Super + \`` | Walk the stack |

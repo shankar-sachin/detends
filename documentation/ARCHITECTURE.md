@@ -18,7 +18,7 @@ Nine crates, dependencies strictly one way.
 | `detends-fs` | jiff | The vault: destinations, entries, file operations, recently deleted. |
 | `detends-music` | ureq, serde | Providers, playback and the worker thread. The only crate that knows Spotify exists. |
 | `detends-render` | paint, wgpu, glyphon | Every pixel. Nothing above it knows a GPU exists. |
-| `detends-shell` | paint, time, fs, music | Boot, windows, the dock, Focus, System Center, Search. Never draws. |
+| `detends-shell` | paint, time, fs, music, native | Boot, windows, the dock, Focus, System Center, Search. Never draws. |
 | `detends-host` | shell, render, winit | The platform. The only crate that knows what a window is. |
 
 `detends-time`, `detends-fs` and `detends-music` are the domain crates: no GPU,

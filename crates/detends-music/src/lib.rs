@@ -28,7 +28,7 @@ pub mod provider;
 pub mod spotify;
 pub mod track;
 
-pub use engine::Music;
+pub use engine::{fetch, Music};
 pub use local::LocalProvider;
 pub use playback::{Command, Playback, Status};
 pub use provider::Provider;

@@ -22,3 +22,4 @@ pollster = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 png = "0.18"
+zune-jpeg = "0.4"

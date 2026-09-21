@@ -50,12 +50,12 @@ pub fn bounds(workspace: Vec2) -> Rect {
 }
 
 /// Where each app sits, for drawing and hit-testing alike.
-pub fn slots(workspace: Vec2) -> [(App, Rect); 6] {
+pub fn slots(workspace: Vec2) -> [(App, Rect); 7] {
     let strip = bounds(workspace);
     let span = PITCH * (App::ALL.len() as f32 - 1.0);
     let start = strip.center.x - span * 0.5;
 
-    let mut out = [(App::Surf, Rect::ZERO); 6];
+    let mut out = [(App::Surf, Rect::ZERO); 7];
     for (index, app) in App::ALL.iter().enumerate() {
         out[index] = (
             *app,

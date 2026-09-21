@@ -38,6 +38,14 @@ pub struct Palette {
     pub rim: Color,
     /// The one accent in the system, used sparingly — Focus, selection.
     pub accent: Color,
+    /// The focused window's glass tint.
+    ///
+    /// Much heavier than [`Self::glass`]. A control panel is a small pane over
+    /// content and wants to be seen through; a window is most of the screen
+    /// and wants to be a surface you can read on.
+    pub window: Color,
+    /// A window that is not focused, drawn flat rather than as glass.
+    pub window_back: Color,
     /// The two lights the environment is lit by (§17).
     ///
     /// The ground stays deep and neutral; these carry the colour. Two of them,
@@ -73,6 +81,8 @@ impl Palette {
             // Glass on a dark ground lightens slightly; a dark tint would read
             // as a hole rather than a pane.
             glass: Color::oklch(0.62, 0.008, HUE).alpha(0.10),
+            window: Color::oklch(0.30, 0.010, HUE).alpha(0.72),
+            window_back: Color::oklch(0.20, 0.008, HUE).alpha(0.82),
             rim: Color::oklch(0.98, 0.004, HUE).alpha(0.30),
             accent: Color::oklch(0.72, 0.085, 232.0),
             // Restrained on purpose: the alpha is the strength, and at these
@@ -93,6 +103,8 @@ impl Palette {
             // On a light ground the pane darkens instead, so it still reads as
             // a distinct surface rather than dissolving into the background.
             glass: Color::oklch(0.55, 0.006, HUE).alpha(0.07),
+            window: Color::oklch(0.97, 0.004, HUE).alpha(0.78),
+            window_back: Color::oklch(0.93, 0.004, HUE).alpha(0.86),
             rim: Color::oklch(1.0, 0.0, HUE).alpha(0.55),
             accent: Color::oklch(0.55, 0.105, 232.0),
             // On a light ground the lights tint rather than illuminate, so
