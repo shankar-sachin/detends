@@ -5,7 +5,7 @@
 //! gain content.
 
 use detends_paint::vec2;
-use detends_shell::{Mode, Shell};
+use detends_shell::{App, Shell};
 use std::time::Instant;
 
 #[test]
@@ -24,7 +24,7 @@ fn building_a_frame_is_far_cheaper_than_a_frame_budget() {
     let start = Instant::now();
     for n in 0..frames {
         if n % 200 == 0 {
-            shell.go(t, Mode::ALL[(n / 200) % 5]);
+            shell.open(t, App::ALL[(n / 200) % App::ALL.len()]);
         }
         t += 1.0 / 120.0;
         let _ = shell.tick(t);

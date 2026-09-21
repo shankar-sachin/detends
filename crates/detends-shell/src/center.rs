@@ -12,8 +12,8 @@
 
 use crate::system::{Focus, System};
 use detends_paint::{
-    space, text, Align, Color, Fill, Frame, Glass, Id, Item, Layer, Palette, Primitive, Rect, Text,
-    Vec2,
+    space, text, Align, Color, Fill, Frame, Glass, Icon, IconShape, Id, Item, Layer, Palette,
+    Primitive, Rect, Text, Vec2, ICON_STROKE,
 };
 use detends_time::TimeOfDay;
 
@@ -21,7 +21,16 @@ pub const PANEL: Id = Id::of("system-center");
 
 /// Panel size, in logical units.
 const WIDTH: f32 = 340.0;
-const HEIGHT: f32 = 380.0;
+
+/// The lit disc behind a toggle's icon.
+const PILL: f32 = 32.0;
+/// The mark beside a slider's name.
+const SLIDER_ICON: f32 = 16.0;
+/// How thick a slider's capsule is.
+const TRACK: f32 = 22.0;
+// Sized to its contents. The panel held a third of empty glass below the
+// brightness slider, which read as something failing to load.
+const HEIGHT: f32 = 344.0;
 
 /// Where the panel wants to sit: under the cluster, aligned to its right edge.
 pub fn resting_place(cluster: Rect, workspace: Vec2) -> Rect {
@@ -37,6 +46,114 @@ pub fn resting_place(cluster: Rect, workspace: Vec2) -> Rect {
             y: HEIGHT,
         },
     )
+}
+
+
+/// A control in the panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    Wifi,
+    Airplane,
+    Bluetooth,
+    Focus,
+    Volume,
+    Brightness,
+}
+
+/// Where every control sits inside an open panel.
+///
+/// One function, used by drawing and by hit-testing alike, so what you see and
+/// what you can press can never drift apart. This is the same discipline Home
+/// and Clock follow, and it matters more here: a toggle that draws in one place
+/// and responds in another is indistinguishable from a broken toggle.
+pub struct Layout {
+    pub toggles: [(Control, Rect); 4],
+    pub sliders: [(Control, Rect); 2],
+}
+
+/// The vertical rhythm of the panel body, shared by `draw` and `layout`.
+///
+/// Returns the y of the first toggle row, and the step between rows.
+fn body_origin(rect: Rect) -> (f32, f32, f32, f32) {
+    let pad = space::ROOM;
+    let x = rect.min().x + pad;
+    let inner = rect.width() - pad * 2.0;
+
+    // Time, then date, then the gap before the toggles — the same arithmetic
+    // `draw` walks through.
+    let mut y = rect.min().y + pad;
+    y += text::TITLE.size * 1.35;
+    y += space::OPEN + space::SNUG;
+
+    (x, y, inner, space::WIDE + space::TIGHT)
+}
+
+pub fn layout(panel: Rect) -> Layout {
+    let (x, first_row, inner, row_step) = body_origin(panel);
+    let column = inner * 0.5;
+
+    // A toggle's target is the whole cell, not just its label: a two-line
+    // control that only responds on the word itself is a control people miss.
+    let cell = Vec2 {
+        x: column,
+        y: row_step * 0.9,
+    };
+
+    let order = [
+        Control::Wifi,
+        Control::Airplane,
+        Control::Bluetooth,
+        Control::Focus,
+    ];
+    let mut toggles = [(Control::Wifi, Rect::ZERO); 4];
+    for (index, control) in order.iter().enumerate() {
+        let (row, col) = (index / 2, index % 2);
+        toggles[index] = (
+            *control,
+            Rect::from_min_size(
+                Vec2 {
+                    x: x + col as f32 * column,
+                    y: first_row + row as f32 * row_step - text::LABEL.size * 0.5,
+                },
+                cell,
+            ),
+        );
+    }
+
+    let mut y = first_row + 2.0 * row_step;
+    let mut sliders = [(Control::Volume, Rect::ZERO); 2];
+    for (index, control) in [Control::Volume, Control::Brightness].iter().enumerate() {
+        // The label row, then the capsule — the same two steps `draw` takes.
+        y += text::LABEL.size + space::SNUG;
+        sliders[index] = (
+            *control,
+            Rect::from_min_size(Vec2 { x, y }, Vec2 { x: inner, y: TRACK }),
+        );
+        y += TRACK + space::ROOM;
+    }
+
+    Layout { toggles, sliders }
+}
+
+/// Which control a point lands on, if any.
+pub fn hit(panel: Rect, at: Vec2) -> Option<Control> {
+    let layout = layout(panel);
+    layout
+        .sliders
+        .iter()
+        .chain(layout.toggles.iter())
+        .find(|(_, rect)| rect.contains(at))
+        .map(|(control, _)| *control)
+}
+
+/// Where along a slider a point falls, 0 to 1.
+pub fn slider_value(panel: Rect, control: Control, at: Vec2) -> Option<f32> {
+    let layout = layout(panel);
+    let (_, rect) = layout
+        .sliders
+        .iter()
+        .find(|(c, _)| *c == control)?;
+    Some(((at.x - rect.min().x) / rect.width().max(1.0)).clamp(0.0, 1.0))
 }
 
 /// Draw the panel.
@@ -94,6 +211,8 @@ pub fn draw(
     let x = rect.min().x + pad;
     let inner = rect.width() - pad * 2.0;
     let mut y = rect.min().y + pad;
+    // `body_origin` derives the toggle rows from exactly this arithmetic; if
+    // the two ever disagree, `the_layout_matches_what_is_drawn` fails.
 
     // Time and battery, the two things worth knowing at a glance.
     push_text(
@@ -106,6 +225,34 @@ pub fn draw(
         palette.text,
         Align::Left,
         reveal,
+    );
+    frame.push(
+        Item::new(
+            Id::of("sc-battery-icon"),
+            Layer::Overlay,
+            Primitive::Icon(Icon {
+                rect: Rect::from_center_size(
+                    Vec2 {
+                        // "87%" at title size is about fifty units wide and is
+                        // right-aligned to the inner edge, so this lands just
+                        // to its left with a hair of space.
+                        x: x + inner - 72.0,
+                        y: y + text::TITLE.size * 0.42,
+                    },
+                    Vec2::splat(17.0),
+                ),
+                shape: IconShape::Battery,
+                stroke: ICON_STROKE,
+                color: if system.battery.low() {
+                    palette.accent
+                } else {
+                    palette.text_faint
+                },
+                rim: 0.2,
+            }),
+        )
+        .opacity(reveal)
+        .z(2),
     );
     push_text(
         frame,
@@ -139,31 +286,113 @@ pub fn draw(
     y += space::OPEN + space::SNUG;
 
     // Two columns of toggles, exactly as the specification lays them out.
+    //
+    // Each one is an icon, a name and its state. The icon is what makes a
+    // control panel readable at a glance — four rows of words all look alike,
+    // and the thing you are reaching for is recognised by its shape long
+    // before you have read anything.
     let column = inner * 0.5;
-    let rows: [[(&str, String, bool); 2]; 2] = [
+    let rows: [[(IconShape, &str, String, bool); 2]; 2] = [
         [
-            ("Wi-Fi", connection_label(system), !system.airplane),
-            ("Airplane", on_off(system.airplane), system.airplane),
+            (
+                IconShape::Wifi,
+                "Wi-Fi",
+                connection_label(system),
+                system.wifi_on(),
+            ),
+            (
+                IconShape::Airplane,
+                "Airplane",
+                on_off(system.airplane),
+                system.airplane,
+            ),
         ],
         [
             (
+                IconShape::Bluetooth,
                 "Bluetooth",
                 system.bluetooth.unwrap_or("Off").to_string(),
                 system.bluetooth.is_some(),
             ),
-            ("Focus", focus_label(focus), focus.is_some()),
+            (
+                IconShape::Focus,
+                "Focus",
+                focus_label(focus),
+                focus.is_some(),
+            ),
         ],
     ];
 
+    let toggles = layout(rect).toggles;
+
     for (row_index, row) in rows.iter().enumerate() {
-        for (column_index, (name, value, active)) in row.iter().enumerate() {
+        for (column_index, (shape, name, value, active)) in row.iter().enumerate() {
+            let index = row_index * 2 + column_index;
             let cx = x + column_index as f32 * column;
+            let cell = toggles[index].1;
+
+            // A filled disc when the control is on. This is the one place in
+            // détends that draws a container around something, and it earns it:
+            // a toggle has to say which of two states it is in, and colour
+            // alone does not survive being glanced at.
+            let badge = Rect::from_center_size(
+                Vec2 { x: cx + PILL * 0.5, y: cell.center.y },
+                Vec2::splat(PILL),
+            );
+            frame.push(
+                Item::new(
+                    Id::of("sc-badge").nth(index as u64),
+                    Layer::Overlay,
+                    Primitive::Fill(Fill {
+                        rect: badge,
+                        radius: PILL * 0.5,
+                        squircle: 2.0,
+                        color: if *active {
+                            palette.accent.fade(0.9)
+                        } else {
+                            palette.text_faint.fade(0.16)
+                        },
+                    }),
+                )
+                .opacity(reveal)
+                .z(1),
+            );
+
+            frame.push(
+                Item::new(
+                    Id::of("sc-icon").nth(index as u64),
+                    Layer::Overlay,
+                    Primitive::Icon(Icon {
+                        rect: Rect::from_center_size(badge.center, Vec2::splat(PILL * 0.52)),
+                        shape: *shape,
+                        stroke: ICON_STROKE,
+                        // Dark on the lit badge, light on the unlit one: the
+                        // icon stays legible either way rather than
+                        // disappearing into whichever it is sitting on.
+                        color: if *active {
+                            palette.ground
+                        } else {
+                            palette.text_soft
+                        },
+                        rim: 0.0,
+                    }),
+                )
+                .opacity(reveal)
+                .z(2),
+            );
+
+            let text_x = cx + PILL + space::SNUG;
+            let text_width = column - PILL - space::SNUG;
+
             push_text(
                 frame,
-                Id::of("sc-name").nth((row_index * 2 + column_index) as u64),
+                Id::of("sc-name").nth(index as u64),
                 name.to_string(),
-                Vec2 { x: cx, y },
-                column,
+                Vec2 {
+                    x: text_x,
+                    y: cell.center.y - text::LABEL.size * 0.62,
+                },
+                text_width,
                 text::LABEL,
                 palette.text,
                 Align::Left,
@@ -171,13 +400,13 @@ pub fn draw(
             );
             push_text(
                 frame,
-                Id::of("sc-value").nth((row_index * 2 + column_index) as u64),
+                Id::of("sc-value").nth(index as u64),
                 value.clone(),
                 Vec2 {
-                    x: cx,
-                    y: y + text::LABEL.size * 1.45,
+                    x: text_x,
+                    y: cell.center.y + text::CAPTION.size * 0.75,
                 },
-                column,
+                text_width,
                 text::CAPTION,
                 if *active {
                     palette.text_soft
@@ -192,22 +421,65 @@ pub fn draw(
     }
 
     // Volume and brightness, the two continuous controls.
-    for (index, (name, value)) in [("Volume", system.volume), ("Brightness", system.brightness)]
-        .iter()
-        .enumerate()
+    //
+    // The mark sits beside its name rather than beside the track, so the label
+    // row and the toggle rows above it share one left edge, and the track runs
+    // the full width beneath. Putting the icon next to the track instead left
+    // the label hanging over the icon and the track starting somewhere else —
+    // three left edges in four lines.
+    for (index, (shape, name, value)) in [
+        (
+            if system.volume <= 0.001 {
+                IconShape::SpeakerMuted
+            } else {
+                IconShape::Speaker
+            },
+            "Volume",
+            system.volume,
+        ),
+        (IconShape::Brightness, "Brightness", system.brightness),
+    ]
+    .iter()
+    .enumerate()
     {
+        frame.push(
+            Item::new(
+                Id::of("sc-slider-icon").nth(index as u64),
+                Layer::Overlay,
+                Primitive::Icon(Icon {
+                    rect: Rect::from_center_size(
+                        Vec2 {
+                            x: x + SLIDER_ICON * 0.5,
+                            y: y + text::LABEL.size * 0.5,
+                        },
+                        Vec2::splat(SLIDER_ICON),
+                    ),
+                    shape: *shape,
+                    stroke: ICON_STROKE,
+                    color: palette.text_soft,
+                    rim: 0.2,
+                }),
+            )
+            .opacity(reveal)
+            .z(2),
+        );
+
         push_text(
             frame,
             Id::of("sc-slider-name").nth(index as u64),
             name.to_string(),
-            Vec2 { x, y },
-            inner,
+            Vec2 {
+                x: x + SLIDER_ICON + space::SNUG,
+                y,
+            },
+            inner - SLIDER_ICON - space::SNUG,
             text::LABEL,
             palette.text,
             Align::Left,
             reveal,
         );
-        y += text::LABEL.size * 1.6;
+
+        y += text::LABEL.size + space::SNUG;
         slider(
             frame,
             Id::of("sc-slider").nth(index as u64),
@@ -217,64 +489,10 @@ pub fn draw(
             palette,
             reveal,
         );
-        y += space::ROOM + space::SNUG;
+        y += TRACK + space::ROOM;
     }
 }
 
-fn slider(
-    frame: &mut Frame,
-    id: Id,
-    at: Vec2,
-    width: f32,
-    value: f32,
-    palette: &Palette,
-    opacity: f32,
-) {
-    let height = 4.0;
-    let value = value.clamp(0.0, 1.0);
-
-    frame.push(
-        Item::new(
-            id,
-            Layer::Overlay,
-            Primitive::Fill(Fill {
-                rect: Rect::from_min_size(
-                    at,
-                    Vec2 {
-                        x: width,
-                        y: height,
-                    },
-                ),
-                radius: height * 0.5,
-                squircle: 4.0,
-                color: palette.text_faint.alpha(0.22),
-            }),
-        )
-        .opacity(opacity)
-        .z(1),
-    );
-
-    frame.push(
-        Item::new(
-            id.nth(1),
-            Layer::Overlay,
-            Primitive::Fill(Fill {
-                rect: Rect::from_min_size(
-                    at,
-                    Vec2 {
-                        x: width * value,
-                        y: height,
-                    },
-                ),
-                radius: height * 0.5,
-                squircle: 4.0,
-                color: palette.text_soft,
-            }),
-        )
-        .opacity(opacity)
-        .z(2),
-    );
-}
 
 #[allow(clippy::too_many_arguments)]
 fn push_text(
@@ -312,6 +530,61 @@ fn push_text(
         .opacity(opacity)
         .z(3),
     );
+}
+
+/// A continuous control, drawn as a capsule.
+///
+/// Thicker than a hairline on purpose. A 4px rule is a fine thing to look at
+/// and a poor thing to aim at, and at this size the filled portion reads as a
+/// quantity rather than as a line that happens to change length.
+fn slider(
+    frame: &mut Frame,
+    id: Id,
+    at: Vec2,
+    width: f32,
+    value: f32,
+    palette: &Palette,
+    opacity: f32,
+) {
+    let value = value.clamp(0.0, 1.0);
+    let rect = Rect::from_min_size(at, Vec2 { x: width, y: TRACK });
+    let radius = TRACK * 0.5;
+
+    frame.push(
+        Item::new(
+            id,
+            Layer::Overlay,
+            Primitive::Fill(Fill {
+                rect,
+                radius,
+                squircle: 2.0,
+                color: palette.text_faint.alpha(0.18),
+            }),
+        )
+        .opacity(opacity)
+        .z(1),
+    );
+
+    // The fill is never narrower than the capsule is round: a rounded rect
+    // thinner than its own radius collapses into a lens, which at zero reads
+    // as a stray dot rather than as an empty control.
+    let filled = (width * value).max(TRACK);
+    if value > 0.001 {
+        frame.push(
+            Item::new(
+                id.nth(1),
+                Layer::Overlay,
+                Primitive::Fill(Fill {
+                    rect: Rect::from_min_size(at, Vec2 { x: filled, y: TRACK }),
+                    radius,
+                    squircle: 2.0,
+                    color: palette.text_soft,
+                }),
+            )
+            .opacity(opacity)
+            .z(2),
+        );
+    }
 }
 
 fn connection_label(system: &System) -> String {
@@ -527,5 +800,118 @@ mod tests {
             place.max().y <= 420.0 - space::ROOM + 1.0,
             "ran off the bottom"
         );
+    }
+
+
+    
+    fn panel() -> Rect {
+        resting_place(
+            Rect::from_min_size(vec2(1150.0, 24.0), vec2(300.0, 40.0)),
+            vec2(1512.0, 982.0),
+        )
+    }
+
+    #[test]
+    fn every_control_has_somewhere_to_be_pressed() {
+        let panel = panel();
+        let layout = layout(panel);
+
+        for (control, rect) in layout.toggles.iter().chain(layout.sliders.iter()) {
+            assert!(rect.width() > 0.0 && rect.height() > 0.0, "{control:?} has no target");
+            assert_eq!(hit(panel, rect.center), Some(*control));
+        }
+    }
+
+    #[test]
+    fn the_controls_are_the_states_the_specification_lists() {
+        // States only. A screenshot button here would be a rule-4 violation.
+        let layout = layout(panel());
+        let names: Vec<_> = layout.toggles.iter().map(|(c, _)| *c).collect();
+        assert_eq!(
+            names,
+            [Control::Wifi, Control::Airplane, Control::Bluetooth, Control::Focus]
+        );
+    }
+
+    #[test]
+    fn no_two_controls_overlap() {
+        // Overlapping targets mean one control is unreachable.
+        let layout = layout(panel());
+        let all: Vec<Rect> = layout
+            .toggles
+            .iter()
+            .chain(layout.sliders.iter())
+            .map(|(_, r)| *r)
+            .collect();
+
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                let apart = a.max().x <= b.min().x
+                    || b.max().x <= a.min().x
+                    || a.max().y <= b.min().y
+                    || b.max().y <= a.min().y;
+                assert!(apart, "two controls overlap: {a:?} and {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn everything_stays_inside_the_panel() {
+        let panel = panel();
+        let layout = layout(panel);
+        for (control, rect) in layout.toggles.iter().chain(layout.sliders.iter()) {
+            assert!(
+                rect.min().x >= panel.min().x && rect.max().x <= panel.max().x,
+                "{control:?} runs outside the panel horizontally"
+            );
+            assert!(
+                rect.min().y >= panel.min().y && rect.max().y <= panel.max().y,
+                "{control:?} runs outside the panel vertically"
+            );
+        }
+    }
+
+    #[test]
+    fn a_point_outside_every_control_lands_on_nothing() {
+        let panel = panel();
+        assert_eq!(hit(panel, panel.min()), None);
+        assert_eq!(hit(panel, vec2(10.0, 900.0)), None);
+    }
+
+    #[test]
+    fn dragging_a_slider_reads_left_to_right() {
+        let panel = panel();
+        let (_, rect) = layout(panel).sliders[0];
+
+        assert_eq!(slider_value(panel, Control::Volume, rect.min()), Some(0.0));
+        assert_eq!(slider_value(panel, Control::Volume, rect.max()), Some(1.0));
+
+        let middle = slider_value(panel, Control::Volume, rect.center).unwrap();
+        assert!((middle - 0.5).abs() < 0.01, "got {middle}");
+    }
+
+    #[test]
+    fn dragging_past_the_ends_clamps_rather_than_running_away() {
+        let panel = panel();
+        let (_, rect) = layout(panel).sliders[1];
+        let far_left = vec2(rect.min().x - 500.0, rect.center.y);
+        let far_right = vec2(rect.max().x + 500.0, rect.center.y);
+
+        assert_eq!(slider_value(panel, Control::Brightness, far_left), Some(0.0));
+        assert_eq!(slider_value(panel, Control::Brightness, far_right), Some(1.0));
+    }
+
+    #[test]
+    fn the_layout_matches_what_is_drawn() {
+        // draw() and layout() walk the same arithmetic through `body_origin`.
+        // This pins the toggle rows to where the drawn labels actually land.
+        let panel = panel();
+        let layout = layout(panel);
+        let (x, first_row, inner, step) = body_origin(panel);
+
+        assert!((layout.toggles[0].1.min().x - x).abs() < 0.01);
+        assert!((layout.toggles[1].1.min().x - (x + inner * 0.5)).abs() < 0.01);
+        assert!((layout.toggles[2].1.min().y - layout.toggles[0].1.min().y - step).abs() < 0.01);
+        assert!(layout.toggles[0].1.min().y < first_row + 1.0);
     }
 }

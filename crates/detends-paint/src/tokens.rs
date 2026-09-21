@@ -78,7 +78,7 @@ impl Palette {
             // Restrained on purpose: the alpha is the strength, and at these
             // values neither light is nameable as a colour. You should not be
             // able to say "it is blue" — only that it is not grey.
-            glow_cool: Color::oklch(0.50, 0.070, 248.0).alpha(0.34),
+            glow_cool: Color::oklch(0.54, 0.085, 250.0).alpha(0.42),
             glow_warm: Color::oklch(0.52, 0.055, 28.0).alpha(0.20),
         }
     }

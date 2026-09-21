@@ -500,10 +500,28 @@ pub enum IconShape {
     Page = 21,
     Deck = 22,
     Grid = 23,
+
+    // Music: what a transport needs beyond play and pause (§4).
+    Shuffle = 24,
+    Repeat = 25,
+    Heart = 26,
+    Queue = 27,
+    Library = 28,
+    Speaker = 29,
+    SpeakerMuted = 30,
+    Devices = 31,
+
+    // System states, for System Center and the cluster (§10).
+    Wifi = 32,
+    Bluetooth = 33,
+    Brightness = 34,
+    Battery = 35,
+    Search = 36,
+    Check = 37,
 }
 
 impl IconShape {
-    pub const ALL: [IconShape; 24] = [
+    pub const ALL: [IconShape; 38] = [
         IconShape::Music,
         IconShape::Clock,
         IconShape::Mail,
@@ -528,6 +546,20 @@ impl IconShape {
         IconShape::Page,
         IconShape::Deck,
         IconShape::Grid,
+        IconShape::Shuffle,
+        IconShape::Repeat,
+        IconShape::Heart,
+        IconShape::Queue,
+        IconShape::Library,
+        IconShape::Speaker,
+        IconShape::SpeakerMuted,
+        IconShape::Devices,
+        IconShape::Wifi,
+        IconShape::Bluetooth,
+        IconShape::Brightness,
+        IconShape::Battery,
+        IconShape::Search,
+        IconShape::Check,
     ];
 
     pub fn name(self) -> &'static str {
@@ -556,6 +588,20 @@ impl IconShape {
             IconShape::Page => "Page",
             IconShape::Deck => "Deck",
             IconShape::Grid => "Grid",
+            IconShape::Shuffle => "Shuffle",
+            IconShape::Repeat => "Repeat",
+            IconShape::Heart => "Heart",
+            IconShape::Queue => "Queue",
+            IconShape::Library => "Library",
+            IconShape::Speaker => "Speaker",
+            IconShape::SpeakerMuted => "Speaker Muted",
+            IconShape::Devices => "Devices",
+            IconShape::Wifi => "Wi-Fi",
+            IconShape::Bluetooth => "Bluetooth",
+            IconShape::Brightness => "Brightness",
+            IconShape::Battery => "Battery",
+            IconShape::Search => "Search",
+            IconShape::Check => "Check",
         }
     }
 }

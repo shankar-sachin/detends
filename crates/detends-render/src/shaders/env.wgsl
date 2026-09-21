@@ -102,16 +102,16 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // a large radius with the same noise warp bending it, so the two never
     // read as two circles — only as a field that is warmer one side and cooler
     // the other.
-    let cool_at = vec2<f32>(-0.30, -0.26) + drift * 1.4;
+    let cool_at = vec2<f32>(-0.30, 0.16) + drift * 1.4;
     let warm_at = vec2<f32>(0.36, 0.30) - drift;
 
-    let cool_d = length(p - cool_at) * 1.06 + warp * 0.8;
+    let cool_d = length(p - cool_at) * 0.86 + warp * 0.8;
     let warm_d = length(p - warm_at) * 1.24 + warp * 0.6;
 
     // Squared falloff: gentle in the middle, and genuinely gone at the edge,
     // so neither light lands on the periphery where it would fight the
     // vignette that keeps attention centred.
-    let cool = pow(clamp(1.0 - cool_d, 0.0, 1.0), 2.9);
+    let cool = pow(clamp(1.0 - cool_d, 0.0, 1.0), 2.3);
     let warm = pow(clamp(1.0 - warm_d, 0.0, 1.0), 3.1);
 
     // Focus dims the lights faster than it contracts the field: the room goes

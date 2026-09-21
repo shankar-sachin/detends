@@ -1,3 +1,7 @@
 target/
 *.dSYM/
 .DS_Store
+
+# Claude Code's working files belong to the machine, not to the project.
+.claude/
+CLAUDE.md

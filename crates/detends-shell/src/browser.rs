@@ -121,6 +121,38 @@ fn entry_icon(kind: Kind) -> IconShape {
     }
 }
 
+
+/// Shorten a name that will not fit, with an ellipsis.
+///
+/// Measured by an average character width rather than by shaping the text,
+/// because the shell has no font and cannot ask. Inter's lowercase averages a
+/// little over half its size; the estimate is deliberately conservative, so a
+/// name is occasionally shortened a character earlier than it had to be and
+/// never overruns its column.
+///
+/// The alternative is what this replaced: the renderer wraps, the second line
+/// has nowhere to go, and the name is cut off mid-word with no sign that
+/// anything is missing.
+fn fit(name: &str, width: f32, size: f32) -> String {
+    let per_char = size * 0.55;
+    let room = (width / per_char).floor().max(4.0) as usize;
+
+    if name.chars().count() <= room {
+        return name.to_string();
+    }
+
+    // Keep the extension: "Screenshot 2026-…png" says more than a name cut at
+    // a fixed length, because what a file *is* lives at the end of its name.
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, ext)) if ext.len() <= 5 && !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+
+    let keep = room.saturating_sub(extension.chars().count() + 1);
+    let head: String = stem.chars().take(keep).collect();
+    format!("{}…{}", head.trim_end(), extension)
+}
+
 /// Files.
 pub struct Browser {
     place: usize,
@@ -789,7 +821,7 @@ impl Browser {
             write(
                 frame,
                 Id::of("files-row-name").nth(index as u64),
-                entry.name.clone().into(),
+                fit(&entry.name, name_width, text::BODY.size).into(),
                 Vec2 { x: name_x + name_width * 0.5, y },
                 name_width,
                 text::BODY,
@@ -1211,5 +1243,27 @@ mod tests {
         assert_ne!(deck, grid);
         assert_ne!(page, grid);
         assert_ne!(page, entry_icon(Kind::Other));
+    }
+
+    #[test]
+    fn a_name_too_long_for_its_column_is_shortened_rather_than_wrapped() {
+        let long = "Screenshot 2026-09-17 at 17.14.02.png";
+        let short = fit(long, 160.0, 15.0);
+
+        assert!(short.chars().count() < long.chars().count());
+        assert!(short.contains('…'), "no sign anything was cut: {short}");
+        assert!(short.ends_with(".png"), "the extension was lost: {short}");
+    }
+
+    #[test]
+    fn a_name_that_fits_is_left_alone() {
+        assert_eq!(fit("notes.dpg", 400.0, 15.0), "notes.dpg");
+    }
+
+    #[test]
+    fn shortening_never_panics_on_awkward_names() {
+        for name in ["", ".", "a", "…", "no-extension", "x.verylongextension"] {
+            let _ = fit(name, 40.0, 15.0);
+        }
     }
 }

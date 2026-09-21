@@ -311,8 +311,23 @@ impl Renderer {
             let source = backdrop_index(index);
             let target = target_index(index);
 
-            // B: blur whatever this layer will refract.
-            self.pass_blur(&mut encoder, source);
+            // B: blur whatever this layer will refract — but only if anything
+            // in it actually refracts.
+            //
+            // The blurred texture is read by exactly one pipeline: glass. A
+            // layer with no glass in it composites without ever sampling the
+            // result, so running the pyramid for it is a full set of
+            // downsample and upsample passes at display resolution whose
+            // output is then discarded.
+            //
+            // Three layers meant three pyramids every frame regardless. In
+            // practice at most one layer usually holds glass — the environment
+            // never does, and the overlay only while System Center or Search
+            // is open — so this is most of the frame's GPU time going nowhere.
+            let (glass_start, glass_end) = self.batches[index].glass;
+            if glass_end > glass_start {
+                self.pass_blur(&mut encoder, source);
+            }
 
             // C: composite the layer.
             self.pass_layer(&mut encoder, frame, *layer, source, target);

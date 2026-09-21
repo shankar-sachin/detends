@@ -9,32 +9,45 @@ identical on both.
 
 | | |
 |---|---|
-| `Super + 1` … `Super + 5` | Music · Clock · Mail · Studio · Files |
-| `1` … `5` | The same five, when nothing is being typed into |
+| `Super + 1` … `Super + 6` | The dock, left to right: Surf · Spotify · Files · Clock · Mail · Studio |
+| `1` … `6` | The same, when nothing is being typed into |
+| `Super + W` | Close the window in front |
+| `Super + M` | Put it away — it stays in the dock |
+| `Super + \`` | Walk the stack |
 | `Super + Space` | Universal Search |
 | `Escape` | Back out one step |
 | `Super + Q` | Leave détends |
 
-The five places are reachable **without** a modifier: a chord the window system
-might claim is not a reliable way to reach the only five destinations a system
-has. The exception is the one that matters — while a name is being typed, into
-Search or into a field in Files, `1` is the digit one. "Week 1" has to be a
-folder a person can name.
+The dock is reachable **without** a modifier: a chord the window system might
+claim is not a reliable way to reach the apps a system has. A number names a
+*dock position* rather than an app, so 1 is always whatever is leftmost, which
+is what your hand learns. The exception is the one that matters — while a name
+is being typed, into Search or into a field in Files, `1` is the digit one.
+"Week 1" has to be a folder a person can name.
 
 `Escape` backs out one step rather than doing one fixed thing: first a name
-being typed, then Search or System Center, then the mode, landing at Home. It
+being typed, then Search or System Center, then the window in front — which it
+*minimises* rather than closes, because Escape has to stay safe to press. It
 never leaves the system — which is only a safe rule because `Super + Q` does.
 An Escape that quits can never be pressed confidently, and every surface it
 might dismiss becomes a trap.
 
-It is also matched **before** any mode sees the keyboard. Clock, Files and Home
-each claim bare keys while they are in view, so a global gesture has to be taken
-first or the mode becomes a room with no door.
+It is also matched **before** any app sees the keyboard. Clock, Files and
+Spotify each claim bare keys while focused, so a global gesture has to be taken
+first or the window becomes a room with no door.
+
+## Spotify
+
+| | |
+|---|---|
+| `Space` | Play / pause |
+| `←` `→` | Previous / next |
+| `s` | Shuffle |
+| `r` | Repeat: off → all → one |
 
 ## Files
 
-Bare keys, because Files is a place you are in rather than a window you have
-focused. Nothing here is destructive without a modifier.
+Bare keys, reaching whichever window is focused. Nothing here is destructive without a modifier.
 
 | | |
 |---|---|

@@ -7,7 +7,7 @@ detends-compositor  ─────┘
    (smithay, later)
 ```
 
-Eight crates, dependencies strictly one way.
+Nine crates, dependencies strictly one way.
 
 | Crate | Depends on | Owns |
 |---|---|---|
@@ -16,15 +16,19 @@ Eight crates, dependencies strictly one way.
 | `detends-paint` | motion | What a frame *is*: geometry, colour, tokens, the display list. |
 | `detends-time` | jiff | Clock, World Clock, alarms, timers, stopwatch. |
 | `detends-fs` | jiff | The vault: destinations, entries, file operations, recently deleted. |
+| `detends-music` | ureq, serde | Providers, playback and the worker thread. The only crate that knows Spotify exists. |
 | `detends-render` | paint, wgpu, glyphon | Every pixel. Nothing above it knows a GPU exists. |
-| `detends-shell` | paint, time, fs | Boot, five modes, Focus, System Center, Search. Never draws. |
+| `detends-shell` | paint, time, fs, music | Boot, windows, the dock, Focus, System Center, Search. Never draws. |
 | `detends-host` | shell, render, winit | The platform. The only crate that knows what a window is. |
 
-`detends-time` and `detends-fs` are the two domain crates: no GPU, no window, no
-rendering, and testable in full without any of them. Clock is built on the first
-and Files on the second, which is why both modes are real rather than
-placeholder layouts. A mode that has grown a domain crate has stopped being a
-sketch.
+`detends-time`, `detends-fs` and `detends-music` are the domain crates: no GPU,
+no window, no rendering. Clock is built on the first, Files on the second and
+Music on the third, which is why all three are real rather than placeholder
+layouts. A mode that has grown a domain crate has stopped being a sketch.
+
+`detends-music` is the one that talks to the network, and it does so on its own
+thread. The shell asks it for a snapshot and never waits: a frame has eight
+milliseconds and a round trip to Spotify does not fit in one.
 
 ## The seam
 

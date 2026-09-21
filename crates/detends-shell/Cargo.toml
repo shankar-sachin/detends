@@ -10,5 +10,6 @@ description = "The détends shell: five modes, one System Center, one Search."
 detends-paint = { workspace = true }
 detends-time = { workspace = true }
 detends-fs = { workspace = true }
+detends-music = { workspace = true }
 jiff = { workspace = true }
 log = { workspace = true }

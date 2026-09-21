@@ -409,6 +409,173 @@ fn icon_trash(p: vec2<f32>, w: f32) -> f32 {
         op_union(op_union(side_l, side_r), floor));
 }
 
+// ---- Music transport, and the system states -----------------------------
+//
+// Everything here is drawn as strokes of a single weight, like the rest of the
+// set, so that a transport row and a status cluster read as the same hand.
+
+// Shuffle: two paths crossing, with arrowheads on the right.
+fn icon_shuffle(p: vec2<f32>, w: f32) -> f32 {
+    let a = outline(sd_segment(p, vec2<f32>(-0.78, -0.42), vec2<f32>(-0.20, -0.42)), w);
+    let b = outline(sd_segment(p, vec2<f32>(-0.20, -0.42), vec2<f32>(0.34, 0.42)), w);
+    let c = outline(sd_segment(p, vec2<f32>(0.34, 0.42), vec2<f32>(0.62, 0.42)), w);
+    let d = outline(sd_segment(p, vec2<f32>(-0.78, 0.42), vec2<f32>(-0.20, 0.42)), w);
+    let e = outline(sd_segment(p, vec2<f32>(-0.20, 0.42), vec2<f32>(0.34, -0.42)), w);
+    let f = outline(sd_segment(p, vec2<f32>(0.34, -0.42), vec2<f32>(0.62, -0.42)), w);
+    let head_t = op_union(
+        outline(sd_segment(p, vec2<f32>(0.62, -0.42), vec2<f32>(0.40, -0.62)), w),
+        outline(sd_segment(p, vec2<f32>(0.62, -0.42), vec2<f32>(0.40, -0.22)), w));
+    let head_b = op_union(
+        outline(sd_segment(p, vec2<f32>(0.62, 0.42), vec2<f32>(0.40, 0.22)), w),
+        outline(sd_segment(p, vec2<f32>(0.62, 0.42), vec2<f32>(0.40, 0.62)), w));
+    let top = op_union(op_union(a, b), c);
+    let bottom = op_union(op_union(d, e), f);
+    return op_union(op_union(top, bottom), op_union(head_t, head_b));
+}
+
+// Repeat: a rounded rectangle of travel with an arrowhead closing the loop.
+fn icon_repeat(p: vec2<f32>, w: f32) -> f32 {
+    let loop_d = outline(sd_box(p, vec2<f32>(0.66, 0.44), 0.30), w);
+    // A notch at the top right, so the loop reads as a path rather than a ring.
+    let head = op_union(
+        outline(sd_segment(p, vec2<f32>(0.30, -0.66), vec2<f32>(0.54, -0.44)), w),
+        outline(sd_segment(p, vec2<f32>(0.30, -0.22), vec2<f32>(0.54, -0.44)), w));
+    return op_union(loop_d, head);
+}
+
+// Heart: two lobes and a point, unioned *before* stroking.
+//
+// Drawn as a silhouette rather than as two curves, for the same reason the
+// folder is: union the solids first and the seams between them are interior to
+// the shape, so they are never drawn. Two quadratics were tried and cannot do
+// it — a single quadratic bends one way, so the lobe either has no crest (a
+// map pin) or crests into a corner (a shield). Both were drawn before this.
+fn icon_heart(p: vec2<f32>, w: f32) -> f32 {
+    let lobe_l = sd_circle(p - vec2<f32>(-0.33, -0.26), 0.40);
+    let lobe_r = sd_circle(p - vec2<f32>(0.33, -0.26), 0.40);
+
+    // The point below, as a square stood on its corner. Rotating the sample
+    // instead of the shape is the cheap way to get a diamond out of sd_box.
+    let k = 0.7071;
+    let q = p - vec2<f32>(0.0, 0.0);
+    let turned = vec2<f32>((q.x + q.y) * k, (q.y - q.x) * k);
+    let point = sd_box(turned, vec2<f32>(0.47, 0.47), 0.03);
+
+    return outline(op_union(point, op_union(lobe_l, lobe_r)), w);
+}
+
+// Queue: lines, with the last one shorter — a list that continues.
+fn icon_queue(p: vec2<f32>, w: f32) -> f32 {
+    let a = outline(sd_segment(p, vec2<f32>(-0.72, -0.52), vec2<f32>(0.72, -0.52)), w);
+    let b = outline(sd_segment(p, vec2<f32>(-0.72, -0.10), vec2<f32>(0.72, -0.10)), w);
+    let c = outline(sd_segment(p, vec2<f32>(-0.72, 0.32), vec2<f32>(0.20, 0.32)), w);
+    return op_union(op_union(a, b), c);
+}
+
+// Library: records stood on a shelf.
+fn icon_library(p: vec2<f32>, w: f32) -> f32 {
+    let a = outline(sd_segment(p, vec2<f32>(-0.56, -0.62), vec2<f32>(-0.56, 0.52)), w);
+    let b = outline(sd_segment(p, vec2<f32>(-0.18, -0.62), vec2<f32>(-0.18, 0.52)), w);
+    let c = outline(sd_segment(p, vec2<f32>(0.20, -0.62), vec2<f32>(0.20, 0.52)), w);
+    let shelf = outline(sd_segment(p, vec2<f32>(-0.76, 0.70), vec2<f32>(0.76, 0.70)), w);
+    // One leaning, so a shelf of records is not a bar chart.
+    let leaning = outline(sd_segment(p, vec2<f32>(0.50, -0.54), vec2<f32>(0.64, 0.52)), w);
+    return op_union(op_union(op_union(a, b), op_union(c, leaning)), shelf);
+}
+
+/// The speaker cone both volume icons share.
+fn speaker_body(p: vec2<f32>, w: f32) -> f32 {
+    let box_part = outline(sd_box(p - vec2<f32>(-0.48, 0.0), vec2<f32>(0.18, 0.24), 0.04), w);
+    let cone_t = outline(sd_segment(p, vec2<f32>(-0.30, -0.22), vec2<f32>(0.06, -0.64)), w);
+    let cone_b = outline(sd_segment(p, vec2<f32>(-0.30, 0.22), vec2<f32>(0.06, 0.64)), w);
+    let face = outline(sd_segment(p, vec2<f32>(0.06, -0.64), vec2<f32>(0.06, 0.64)), w);
+    return op_union(op_union(box_part, face), op_union(cone_t, cone_b));
+}
+
+fn icon_speaker(p: vec2<f32>, w: f32) -> f32 {
+    let waves = op_union(
+        outline(sd_circle(p - vec2<f32>(0.06, 0.0), 0.44), w),
+        outline(sd_circle(p - vec2<f32>(0.06, 0.0), 0.72), w));
+    // Keep only the right half of each ring, so they read as radiating sound.
+    let right_only = select(1.0, 0.0, p.x > 0.18);
+    return op_union(speaker_body(p, w), waves + right_only);
+}
+
+fn icon_speaker_muted(p: vec2<f32>, w: f32) -> f32 {
+    let cross = op_union(
+        outline(sd_segment(p, vec2<f32>(0.30, -0.30), vec2<f32>(0.74, 0.30)), w),
+        outline(sd_segment(p, vec2<f32>(0.74, -0.30), vec2<f32>(0.30, 0.30)), w));
+    return op_union(speaker_body(p, w), cross);
+}
+
+// Devices: where the sound is going — a small screen and a larger one.
+fn icon_devices(p: vec2<f32>, w: f32) -> f32 {
+    let big = outline(sd_box(p - vec2<f32>(-0.14, -0.10), vec2<f32>(0.56, 0.40), 0.10), w);
+    let small = outline(sd_box(p - vec2<f32>(0.46, 0.30), vec2<f32>(0.26, 0.36), 0.09), w);
+    return op_union(big, small);
+}
+
+// Wi-Fi: arcs over a dot.
+fn icon_wifi(p: vec2<f32>, w: f32) -> f32 {
+    let q = p - vec2<f32>(0.0, 0.52);
+    let far = outline(sd_circle(q, 0.92), w);
+    let mid = outline(sd_circle(q, 0.58), w);
+    let dot = sd_circle(q, 0.10);
+    // Arcs only: drop anything below the source or out to the sides.
+    let above = select(1.0, 0.0, q.y < -0.16);
+    return op_union(dot, op_union(far, mid) + above);
+}
+
+// Bluetooth: the rune, as two triangles meeting a stem.
+fn icon_bluetooth(p: vec2<f32>, w: f32) -> f32 {
+    let stem = outline(sd_segment(p, vec2<f32>(0.0, -0.78), vec2<f32>(0.0, 0.78)), w);
+    let ur = outline(sd_segment(p, vec2<f32>(0.0, -0.78), vec2<f32>(0.42, -0.38)), w);
+    let rd = outline(sd_segment(p, vec2<f32>(0.42, -0.38), vec2<f32>(-0.42, 0.38)), w);
+    let dr = outline(sd_segment(p, vec2<f32>(0.0, 0.78), vec2<f32>(0.42, 0.38)), w);
+    let ru = outline(sd_segment(p, vec2<f32>(0.42, 0.38), vec2<f32>(-0.42, -0.38)), w);
+    return op_union(op_union(stem, ur), op_union(op_union(rd, dr), ru));
+}
+
+// Brightness: a sun, drawn as a disc and eight rays.
+fn icon_brightness(p: vec2<f32>, w: f32) -> f32 {
+    var d = outline(sd_circle(p, 0.34), w);
+    let inner = 0.54;
+    let outer = 0.82;
+    // Four axis rays and four diagonals, unrolled — WGSL has loops, but eight
+    // named segments read better than a loop with a rotation matrix in it.
+    d = op_union(d, outline(sd_segment(p, vec2<f32>(0.0, -inner), vec2<f32>(0.0, -outer)), w));
+    d = op_union(d, outline(sd_segment(p, vec2<f32>(0.0, inner), vec2<f32>(0.0, outer)), w));
+    d = op_union(d, outline(sd_segment(p, vec2<f32>(-inner, 0.0), vec2<f32>(-outer, 0.0)), w));
+    d = op_union(d, outline(sd_segment(p, vec2<f32>(inner, 0.0), vec2<f32>(outer, 0.0)), w));
+    let k = 0.7071;
+    d = op_union(d, outline(sd_segment(p, vec2<f32>(-inner, -inner) * k, vec2<f32>(-outer, -outer) * k), w));
+    d = op_union(d, outline(sd_segment(p, vec2<f32>(inner, -inner) * k, vec2<f32>(outer, -outer) * k), w));
+    d = op_union(d, outline(sd_segment(p, vec2<f32>(-inner, inner) * k, vec2<f32>(-outer, outer) * k), w));
+    d = op_union(d, outline(sd_segment(p, vec2<f32>(inner, inner) * k, vec2<f32>(outer, outer) * k), w));
+    return d;
+}
+
+// Battery: a cell with a terminal.
+fn icon_battery(p: vec2<f32>, w: f32) -> f32 {
+    let body = outline(sd_box(p - vec2<f32>(-0.06, 0.0), vec2<f32>(0.68, 0.38), 0.10), w);
+    let cap = outline(sd_segment(p, vec2<f32>(0.74, -0.16), vec2<f32>(0.74, 0.16)), w);
+    return op_union(body, cap);
+}
+
+// Search: a lens and its handle.
+fn icon_search(p: vec2<f32>, w: f32) -> f32 {
+    let lens = outline(sd_circle(p - vec2<f32>(-0.14, -0.14), 0.50), w);
+    let handle = outline(sd_segment(p, vec2<f32>(0.22, 0.22), vec2<f32>(0.70, 0.70)), w);
+    return op_union(lens, handle);
+}
+
+// Check: done, chosen, connected.
+fn icon_check(p: vec2<f32>, w: f32) -> f32 {
+    let down = outline(sd_segment(p, vec2<f32>(-0.66, 0.04), vec2<f32>(-0.18, 0.50)), w);
+    let up = outline(sd_segment(p, vec2<f32>(-0.18, 0.50), vec2<f32>(0.68, -0.48)), w);
+    return op_union(down, up);
+}
+
 fn icon_distance(shape: i32, p: vec2<f32>, w: f32) -> f32 {
     switch shape {
         case 0:  { return icon_music(p, w); }
@@ -435,6 +602,20 @@ fn icon_distance(shape: i32, p: vec2<f32>, w: f32) -> f32 {
         case 21: { return icon_page(p, w); }
         case 22: { return icon_deck(p, w); }
         case 23: { return icon_grid(p, w); }
+        case 24: { return icon_shuffle(p, w); }
+        case 25: { return icon_repeat(p, w); }
+        case 26: { return icon_heart(p, w); }
+        case 27: { return icon_queue(p, w); }
+        case 28: { return icon_library(p, w); }
+        case 29: { return icon_speaker(p, w); }
+        case 30: { return icon_speaker_muted(p, w); }
+        case 31: { return icon_devices(p, w); }
+        case 32: { return icon_wifi(p, w); }
+        case 33: { return icon_bluetooth(p, w); }
+        case 34: { return icon_brightness(p, w); }
+        case 35: { return icon_battery(p, w); }
+        case 36: { return icon_search(p, w); }
+        case 37: { return icon_check(p, w); }
         default: { return 1.0; }
     }
 }

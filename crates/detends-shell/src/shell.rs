@@ -4,24 +4,27 @@
 //! cluster, Focus. Produces one [`Output`] per tick and knows nothing about how
 //! it gets drawn.
 
+use crate::app::App;
 use crate::boot::{Boot, Mark, Phase};
+use crate::dock;
+use crate::window::{Press, Windows};
 use crate::browser::{self, Browser};
 use crate::center;
-use crate::content::{self, Canvas};
 use crate::input::{Event, Key, MouseButton};
 use crate::clockface::{self, ClockFace, Section};
-use crate::home::{self, Home};
 use crate::notify::{Notice, Notifications};
-use crate::mode::{Destination, Mode, Navigator};
+use crate::nowplaying;
 use crate::search::{self, Command, Power, Search};
 use crate::status;
-use crate::system::{Focus, System};
+use crate::system::{Focus, System, FOCUS_DURATIONS};
+use crate::wallpaper;
 use detends_paint::{
-    space, springs, Appearance, Color, Frame, GlassSettings, MotionPreference, Palette, Rect,
-    Seconds, Spring, TextureId, Vec2,
+    space, springs, text, Align, Appearance, Color, Frame, GlassSettings, Id, Item, Layer,
+    MotionPreference, Palette, Primitive, Rect, Seconds, Spring, TextureId, Vec2,
 };
 use detends_paint::IconShape;
 use detends_fs::{Place, Vault};
+use detends_music::{LocalProvider, Music};
 use detends_time::{Clock, Fired, Schedule, TimeOfDay, WorldClock};
 use jiff::tz::TimeZone;
 
@@ -66,7 +69,10 @@ pub struct Output<'a> {
 
 pub struct Shell {
     boot: Boot,
-    navigator: Navigator,
+    /// Every open window, back to front.
+    windows: Windows,
+    /// Which dock slot the pointer is over, if any.
+    dock_hover: Option<App>,
     system: System,
     focus: Option<Focus>,
     clock: Clock,
@@ -81,9 +87,13 @@ pub struct Shell {
     scale_factor: f32,
     frame: Frame,
     brand: Option<Brand>,
-    home: Home,
     clock_face: ClockFace,
     browser: Browser,
+    /// Music, running its provider on its own thread.
+    ///
+    /// `None` until a provider is chosen, so the shell still builds frames —
+    /// and still tests — without starting a thread or touching the network.
+    music: Option<Music>,
     /// The vault behind Files. `None` until a root is given, so the shell
     /// still runs — and still tests — without touching a disk.
     vault: Option<Vault>,
@@ -101,6 +111,16 @@ pub struct Shell {
     search_presence: Spring<f32>,
     center_open: bool,
     center_presence: Spring<f32>,
+    /// The slider being dragged, if any. Held so a drag keeps working once the
+    /// pointer has left the track — releasing outside a control should not
+    /// silently stop the thing you are still holding.
+    dragging: Option<center::Control>,
+    /// A volume the host should apply to the machine, set when a drag ends.
+    ///
+    /// On release rather than per-frame: applying a device volume sixty times
+    /// a second while a finger moves is an expensive way to arrive at the same
+    /// number, and on most platforms it means spawning something.
+    pending_volume: Option<f32>,
     /// Where the cluster was last drawn, so System Center can grow from it.
     cluster_bounds: Rect,
     /// Set when a power command is chosen; the host acts on it.
@@ -111,7 +131,8 @@ impl Shell {
     pub fn new(now: Seconds, size: Vec2, scale_factor: f32) -> Self {
         Self {
             boot: Boot::new(now),
-            navigator: Navigator::new(Destination::Home),
+            windows: Windows::new(),
+            dock_hover: None,
             system: System::default(),
             focus: None,
             clock: Clock::system(),
@@ -124,9 +145,9 @@ impl Shell {
             scale_factor,
             frame: Frame::new(size, scale_factor),
             brand: None,
-            home: Home::new(),
             clock_face: ClockFace::new(),
             browser: Browser::new(),
+            music: None,
             vault: None,
             schedule: Schedule::new(),
             notifications: Notifications::new(),
@@ -137,6 +158,8 @@ impl Shell {
             search_presence: Spring::new(springs::SETTLE, 0.0),
             center_open: false,
             center_presence: Spring::new(springs::SETTLE, 0.0),
+            dragging: None,
+            pending_volume: None,
             cluster_bounds: Rect::ZERO,
             pending_power: None,
         }
@@ -209,6 +232,26 @@ impl Shell {
         }
     }
 
+    /// Give Music a provider to play through.
+    ///
+    /// The shell never names one: the host decides whether that is Spotify or
+    /// the local player, and Music cannot tell the difference (§4).
+    pub fn set_music(&mut self, music: Music) {
+        self.music = Some(music);
+    }
+
+    /// Start Music on the provider that needs no account.
+    ///
+    /// What a first run gets, so Music is a working mode rather than an error
+    /// message before anything is connected.
+    pub fn use_local_music(&mut self) {
+        self.music = Some(Music::start(Box::new(LocalProvider::placeholder())));
+    }
+
+    pub fn music(&self) -> Option<&Music> {
+        self.music.as_ref()
+    }
+
     pub fn open_vault(&mut self, root: std::path::PathBuf) {
         let vault = Vault::open(root);
         self.browser.refresh(&vault);
@@ -278,7 +321,7 @@ impl Shell {
         ];
 
         self.clock_face.select(now, section);
-        self.go(now, Mode::Clock);
+        self.open(now, App::Clock);
     }
 
     /// Start a timer, and go where it can be watched.
@@ -286,28 +329,30 @@ impl Shell {
         let stamp = self.clock.now().zoned().timestamp();
         self.schedule.start_timer(stamp, duration, name);
         self.clock_face.select(now, Section::Timers);
-        self.go(now, Mode::Clock);
+        self.open(now, App::Clock);
         self.save_schedule();
     }
 
-    /// Where the workspace is.
-    pub fn destination(&self) -> Destination {
-        self.navigator.current()
+    /// The app in front, if anything is open.
+    pub fn focused_app(&self) -> Option<App> {
+        self.windows.focused_app()
     }
 
-    /// The mode in view, or `None` at Home.
-    pub fn mode(&self) -> Option<Mode> {
-        self.navigator.current().mode()
+    pub fn windows(&self) -> &Windows {
+        &self.windows
     }
 
-    pub fn at_home(&self) -> bool {
-        self.navigator.at_home()
+    /// Open an app, or bring it forward if it is already running.
+    pub fn open(&mut self, now: Seconds, app: App) {
+        self.close_search(now);
+        self.windows.open_app(app, self.size, now);
     }
 
-    /// Which place Home has selected.
-    pub fn home_selection(&self) -> Mode {
-        self.home.selected()
+    /// Whether nothing is open — the wallpaper and the dock, and that is all.
+    pub fn showing_desktop(&self) -> bool {
+        self.windows.visible().count() == 0
     }
+
 
     pub fn system(&self) -> &System {
         &self.system
@@ -328,6 +373,11 @@ impl Shell {
     /// A power action the user asked for, taken once.
     pub fn take_power_request(&mut self) -> Option<Power> {
         self.pending_power.take()
+    }
+
+    /// A volume the machine should be set to, taken once.
+    pub fn take_volume_request(&mut self) -> Option<f32> {
+        self.pending_volume.take()
     }
 
     pub fn open_search(&mut self, now: Seconds) {
@@ -372,7 +422,7 @@ impl Shell {
     pub fn run(&mut self, now: Seconds, command: Command) {
         self.close_search(now);
         match command {
-            Command::Go(mode) => self.go(now, mode),
+            Command::Open(app) => self.open(now, app),
             Command::Focus { seconds, name } => self.begin_focus(now, name, seconds),
             // Timers land in Clock, which owns them.
             Command::Timer { seconds, name } => self.start_timer(now, seconds, name),
@@ -441,30 +491,30 @@ impl Shell {
                     self.close_search(now);
                     self.close_center(now);
                 } else {
-                    self.go_home(now);
+                    self.hide_focused(now);
                 }
             }
 
-            // Bare digits, when nothing is being typed into.
+            // Bare digits open the app in that dock slot.
             //
-            // The five places have to be reachable without a modifier: a
-            // combination the window system might claim is not a reliable way
-            // to reach the only five destinations a system has.
+            // The dock is the thing you reach for, so the keyboard shortcut
+            // names a dock position rather than an app — 1 is always whatever
+            // is leftmost, which is what your hand learns.
             Event::KeyDown { key: Key::Mode(index), modifiers }
                 if modifiers.none()
                     && !self.search.is_open()
                     && !self.browser.is_editing() =>
             {
-                if let Some(mode) = Mode::from_index(*index) {
+                if let Some(app) = App::ALL.get(*index as usize - 1).copied() {
                     self.close_center(now);
-                    self.go(now, mode);
+                    self.open(now, app);
                 }
             }
 
             // Clock's own keyboard: the four utilities.
             Event::KeyDown { key, modifiers }
                 if modifiers.none()
-                    && self.navigator.current() == Destination::Mode(Mode::Clock)
+                    && self.windows.focused_app() == Some(App::Clock)
                     && !self.search.is_open() =>
             {
                 match key {
@@ -488,29 +538,38 @@ impl Shell {
                 }
             }
 
+            // Music's own keyboard (§4). Space is play/pause wherever you are
+            // in Music, because that is the one control everybody reaches for.
+            Event::KeyDown { key, modifiers }
+                if modifiers.none()
+                    && self.windows.focused_app() == Some(App::Spotify)
+                    && !self.search.is_open() =>
+            {
+                use detends_music::Command;
+                let command = match key {
+                    Key::Space | Key::Enter => Some(Command::PlayPause),
+                    Key::Right => Some(Command::Next),
+                    Key::Left => Some(Command::Previous),
+                    Key::Character(c) => match c.to_ascii_lowercase() {
+                        's' => Some(Command::ToggleShuffle),
+                        'r' => Some(Command::CycleRepeat),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let (Some(command), Some(music)) = (command, self.music.as_mut()) {
+                    music.send(command);
+                }
+            }
+
             // Files' own keyboard (§9). Bare keys, because Files is a place
             // you are in rather than a window you have focused.
             Event::KeyDown { key, modifiers }
-                if self.navigator.current() == Destination::Mode(Mode::Files)
+                if self.windows.focused_app() == Some(App::Files)
                     && !self.search.is_open()
                     && (modifiers.none() || modifiers.only_sys()) =>
             {
                 self.files_key(now, key.clone(), modifiers.only_sys());
-            }
-
-            // Home's own keyboard.
-            Event::KeyDown { key, modifiers }
-                if modifiers.none() && self.navigator.at_home() && !self.search.is_open() =>
-            {
-                match key {
-                    Key::Left => self.home.step(now, -1),
-                    Key::Right => self.home.step(now, 1),
-                    Key::Enter | Key::Space => {
-                        let selected = self.home.selected();
-                        self.go(now, selected);
-                    }
-                    _ => {}
-                }
             }
 
             Event::KeyDown { key, modifiers } if modifiers.only_sys() => match key {
@@ -522,13 +581,25 @@ impl Shell {
                         self.open_search(now);
                     }
                 }
-                // Super+1…5: the five places, always reachable (§3).
+                // Super+1…6: the dock, always reachable.
                 Key::Mode(index) => {
-                    if let Some(mode) = Mode::from_index(*index) {
+                    if let Some(app) = App::ALL.get(*index as usize - 1).copied() {
                         self.close_search(now);
                         self.close_center(now);
-                        self.go(now, mode);
+                        self.open(now, app);
                     }
+                }
+                // Super+W closes the window in front, Super+M puts it away,
+                // and Super+` walks the stack. The three a windowing system
+                // cannot do without.
+                Key::Character(c) if c.eq_ignore_ascii_case(&'w') => {
+                    self.windows.close_focused(now);
+                }
+                Key::Character(c) if c.eq_ignore_ascii_case(&'m') => {
+                    self.hide_focused(now);
+                }
+                Key::Character(c) if *c == '`' => {
+                    self.windows.cycle(now);
                 }
                 // Super+Q: leave. Escape deliberately never quits — it backs
                 // out, and a surface you cannot dismiss without exiting the
@@ -574,37 +645,47 @@ impl Shell {
                         self.open_center(now);
                     }
                 } else if self.center_open {
-                    // Clicking away dismisses it, as a temporary surface should.
                     let panel = center::resting_place(self.cluster_bounds, self.size);
-                    if !panel.contains(at) {
+                    if panel.contains(at) {
+                        self.press_control(now, panel, at);
+                    } else {
+                        // Clicking away dismisses it, as a temporary surface
+                        // should.
                         self.close_center(now);
                     }
-                } else if self.navigator.current() == Destination::Mode(Mode::Clock) {
-                    let area = self.mode_area();
-                    if let Some(section) = clockface::hit(area, at) {
-                        self.clock_face.select(now, section);
-                    }
-                } else if self.navigator.current() == Destination::Mode(Mode::Files) {
-                    let area = self.mode_area();
-                    if let Some(place) = browser::hit(area, at) {
-                        if let Some(vault) = self.vault.take() {
-                            self.browser.select_place(now, place, &vault);
-                            self.vault = Some(vault);
-                        }
-                    }
-                } else if self.navigator.at_home() {
-                    // The reason Home exists: the five places can be pressed.
-                    if let Some(mode) = home::hit(self.size, at) {
-                        self.go(now, mode);
-                    }
+                } else if let Some(app) = dock::hit(self.size, at) {
+                    self.open(now, app);
+                } else {
+                    self.press_window(now, at);
                 }
             }
 
-            // Moving the pointer over Home previews the selection, so the
-            // keyboard and the pointer never disagree about where you are.
-            Event::PointerMoved { x, y } if self.navigator.at_home() => {
-                if let Some(mode) = home::hit(self.size, Vec2 { x: *x, y: *y }) {
-                    self.home.select(now, mode);
+            // A slider being held follows the pointer anywhere, including
+            // outside the panel — letting go is what ends a drag, not leaving
+            // the track.
+            Event::PointerMoved { x, y } if self.dragging.is_some() => {
+                let panel = center::resting_place(self.cluster_bounds, self.size);
+                if let Some(control) = self.dragging {
+                    self.drag_control(panel, control, Vec2 { x: *x, y: *y });
+                }
+            }
+
+            Event::PointerUp { .. } => {
+                if self.dragging == Some(center::Control::Volume) {
+                    self.pending_volume = Some(self.system.volume);
+                }
+                self.dragging = None;
+                self.windows.release();
+            }
+
+            // A window being dragged follows the pointer; otherwise the dock
+            // lights up whatever is under it.
+            Event::PointerMoved { x, y } => {
+                let at = Vec2 { x: *x, y: *y };
+                if self.windows.is_dragging() {
+                    self.windows.drag_to(at, self.size);
+                } else {
+                    self.dock_hover = dock::hit(self.size, at);
                 }
             }
             Event::AppearanceChanged { prefers_dark } => {
@@ -625,19 +706,126 @@ impl Shell {
         }
     }
 
-    pub fn go(&mut self, now: Seconds, to: impl Into<Destination>) {
-        let to = to.into();
-        // Leaving Home leaves the selection on where you went, so coming back
-        // puts the cursor where you were rather than resetting it.
-        if let Some(mode) = to.mode() {
-            self.home.select(now, mode);
+    /// A press that was not on the dock or a temporary surface.
+    ///
+    /// Windows first, and only then the app inside one: focusing, dragging and
+    /// closing belong to the window manager, and an app never sees the press
+    /// that raised it. Otherwise clicking a background window to bring it
+    /// forward would also press whatever happened to be under the pointer.
+    fn press_window(&mut self, now: Seconds, at: Vec2) {
+        match self.windows.press(at, now) {
+            Press::Nothing => {}
+            Press::Close(id) => self.windows.close(id, now),
+            Press::Minimize(id) => self.windows.minimize(id, now),
+            Press::Drag(_) => {}
+            Press::Content(id, at) => {
+                let Some(window) = self.windows.all().iter().find(|w| w.id == id).cloned() else {
+                    return;
+                };
+                // A press that brought a window forward does not also reach
+                // the app: raising is its own gesture.
+                if Some(id) != self.windows.focused().map(|w| w.id) {
+                    return;
+                }
+                self.press_in_app(now, &window, at);
+            }
         }
-        self.navigator.go(now, to);
     }
 
-    /// Back to Home.
-    pub fn go_home(&mut self, now: Seconds) {
-        self.navigator.go(now, Destination::Home);
+    /// Hand a press to whatever the window holds.
+    fn press_in_app(&mut self, now: Seconds, window: &crate::window::Window, at: Vec2) {
+        let area = window.content().inset(space::ROOM);
+
+        match window.app {
+            App::Clock => {
+                if let Some(section) = clockface::hit(area, at) {
+                    self.clock_face.select(now, section);
+                }
+            }
+            App::Spotify => {
+                if let Some(hit) = nowplaying::hit(area, at) {
+                    let command = nowplaying::command_for(hit, area, at);
+                    if let Some(music) = self.music.as_mut() {
+                        music.send(command);
+                    }
+                }
+            }
+            App::Files => {
+                if let Some(place) = browser::hit(area, at) {
+                    if let Some(vault) = self.vault.take() {
+                        self.browser.select_place(now, place, &vault);
+                        self.vault = Some(vault);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Act on a press inside System Center (§10).
+    ///
+    /// Every control here is a persistent state, so a press is a state change
+    /// and nothing else — there is no confirmation, no dialog and nothing to
+    /// undo, because turning Wi-Fi back on *is* the undo.
+    fn press_control(&mut self, now: Seconds, panel: Rect, at: Vec2) {
+        let Some(control) = center::hit(panel, at) else {
+            return;
+        };
+
+        match control {
+            center::Control::Wifi => {
+                let on = self.system.wifi_on();
+                self.system.set_wifi(!on);
+            }
+            center::Control::Airplane => {
+                let on = self.system.airplane;
+                self.set_airplane(now, !on);
+            }
+            center::Control::Bluetooth => {
+                let on = self.system.bluetooth.is_some();
+                self.system.set_bluetooth(!on);
+            }
+            // Focus is a session rather than a switch: starting one from here
+            // takes the default duration, and pressing again ends it (§12).
+            center::Control::Focus => {
+                if self.focus.is_some() {
+                    self.end_focus(now);
+                } else {
+                    // The first offered length, which the specification puts
+                    // at 25 minutes.
+                    self.begin_focus(now, None, FOCUS_DURATIONS[0].1);
+                }
+            }
+            center::Control::Volume | center::Control::Brightness => {
+                self.dragging = Some(control);
+                self.drag_control(panel, control, at);
+            }
+        }
+    }
+
+    /// Move a continuous control to wherever the pointer is.
+    fn drag_control(&mut self, panel: Rect, control: center::Control, at: Vec2) {
+        let Some(value) = center::slider_value(panel, control, at) else {
+            return;
+        };
+        match control {
+            center::Control::Volume => self.system.volume = value,
+            center::Control::Brightness => self.system.brightness = value,
+            _ => {}
+        }
+    }
+
+    /// Close whatever is in front, or put the last one away.
+    ///
+    /// What Escape does when there is nothing temporary left to dismiss. It
+    /// minimises rather than closes: Escape has to stay safe to press, and a
+    /// key that quietly destroys the window you were working in is not.
+    pub fn hide_focused(&mut self, now: Seconds) -> bool {
+        let Some(id) = self.windows.focused().map(|w| w.id) else {
+            return false;
+        };
+        self.windows.minimize(id, now);
+        true
     }
 
     /// Begin a Focus session (§12). A global state, never a mode.
@@ -674,7 +862,6 @@ impl Shell {
     /// Build the frame for this instant.
     pub fn tick(&mut self, now: Seconds) -> Output<'_> {
         self.boot.update(now);
-        self.navigator.settle(now);
 
         // Time keeps running whatever is on screen (§5): a timer started in
         // Clock finishes while the user is in Mail, and says so.
@@ -713,11 +900,9 @@ impl Shell {
         self.boot.draw(&mut self.frame, &self.palette, now);
 
         if self.boot.animating(now)
-            || !self.navigator.settled(now)
             || !self.hush.at_rest(now)
             || !self.search_presence.at_rest(now)
             || !self.center_presence.at_rest(now)
-            || !self.home.settled(now)
             || !self.clock_face.settled(now)
             || self.notifications.animating(now)
             // A running timer or stopwatch has to redraw about once a second,
@@ -744,22 +929,38 @@ impl Shell {
         let time = self.clock.now();
         let hush = self.hush.value(now).clamp(0.0, 1.0);
 
+        // Underneath everything, including the mode: the mark is the surface
+        // the workspace sits on rather than something drawn onto it.
+        let presence = if self.boot.is_done() {
+            1.0
+        } else {
+            self.boot.workspace_presence(now)
+        };
+        wallpaper::draw(
+            &mut self.frame,
+            &self.palette,
+            self.brand,
+            self.size,
+            now,
+            hush,
+            presence,
+        );
+
         // Focus makes détends quieter: the chrome recedes, the content does
         // not (§12). Never the reverse.
         let chrome = 1.0 - hush * 0.55;
 
-        self.draw_modes(now, &time);
+        self.draw_windows(now, &time);
 
-        // Home names itself only by the mark; naming a mode you are looking at
-        // is useful, naming Home is noise.
-        if !self.navigator.at_home() {
-            status::draw_mode_label(
-                &mut self.frame,
-                &self.palette,
-                self.navigator.current().name(),
-                chrome,
-            );
-        }
+        dock::draw(
+            &mut self.frame,
+            &self.palette,
+            &self.windows,
+            self.size,
+            self.dock_hover,
+            now,
+            chrome,
+        );
 
         let cluster = status::draw(
             &mut self.frame,
@@ -796,45 +997,207 @@ impl Shell {
         self.notifications.draw(&mut self.frame, &self.palette, now);
     }
 
-    /// The area a mode may use, kept clear of the cluster's margins.
-    fn mode_area(&self) -> Rect {
-        Rect::from_min_size(Vec2::ZERO, self.size).inset(space::VAST * 0.5)
+    /// How much room an app gets when it is the only thing on screen.
+    ///
+    /// Kept clear of the status cluster above and the dock below, so a window
+    /// opened at full size never sits under either.
+    #[allow(dead_code)]
+    fn workspace_area(&self) -> Rect {
+        let dock = dock::bounds(self.size);
+        let area = Rect::from_min_size(Vec2::ZERO, self.size).inset(space::VAST * 0.5);
+        let bottom = (dock.min().y - space::ROOM).min(area.max().y);
+        Rect::from_min_size(
+            area.min(),
+            Vec2 {
+                x: area.width(),
+                y: (bottom - area.min().y).max(1.0),
+            },
+        )
     }
 
-    fn draw_modes(&mut self, now: Seconds, time: &TimeOfDay) {
-        let area = self.mode_area();
-
-        // While a temporary surface is up, the workspace recedes — dimmer and
-        // very slightly smaller. One thing owns attention at a time (rule 2),
-        // and without this the search field competes with whatever is behind
-        // it instead of replacing it as the thing being looked at.
+    fn draw_windows(&mut self, now: Seconds, time: &TimeOfDay) {
+        // While a temporary surface is up, everything behind it recedes (rule
+        // 2) — dimmer and very slightly smaller — so the search field replaces
+        // what is behind it as the thing being looked at rather than competing
+        // with it.
         let surface = self
             .search_presence
             .value(now)
             .max(self.center_presence.value(now))
             .clamp(0.0, 1.0);
-        let recede_opacity = 1.0 - surface * 0.55;
-        let recede_scale = 1.0 - surface * 0.012;
+        let recede = 1.0 - surface * 0.55;
 
-        // The departing destination first, so the arriving one sits over it.
-        if let Some(previous) = self.navigator.previous() {
-            let (opacity, scale) = self.navigator.outgoing(now);
-            let opacity = opacity * recede_opacity;
-            if opacity > 0.004 {
-                self.draw_destination(previous, area, opacity, scale * recede_scale, now, time);
+        let windows: Vec<crate::window::Window> = self.windows.visible().cloned().collect();
+        let focused = self.windows.focused().map(|w| w.id);
+
+        for window in windows {
+            // Only the focused window is at full strength. Attention still
+            // belongs to one thing, which is the part of the five-modes idea
+            // worth keeping now that there are several windows.
+            let front = Some(window.id) == focused;
+            let opacity = recede * if front { 1.0 } else { 0.62 };
+            if opacity <= 0.004 {
+                continue;
             }
+
+            self.draw_window(&window, front, opacity, now, time);
+        }
+    }
+
+    /// One window: its glass, its bar, its lights, and whatever it holds.
+    fn draw_window(
+        &mut self,
+        window: &crate::window::Window,
+        front: bool,
+        opacity: f32,
+        now: Seconds,
+        time: &TimeOfDay,
+    ) {
+        use detends_paint::{Fill, Icon, IconShape, Text, ICON_STROKE};
+
+        frame_glass(&mut self.frame, &self.palette, window.rect, front, opacity);
+
+        // The two lights, top right. Colour is the whole signal here, so these
+        // are the one place in détends that uses a hue for its own sake —
+        // everybody already knows what the red one does.
+        for (index, (rect, colour)) in [
+            (window.minimize_button(), Color::hex(0xE0B341)),
+            (window.close_button(), Color::hex(0xE05A47)),
+        ]
+        .iter()
+        .enumerate()
+        {
+            self.frame.push(
+                Item::new(
+                    Id::of("window-light").nth(window.id.0 * 4 + index as u64),
+                    Layer::Content,
+                    Primitive::Fill(Fill {
+                        rect: Rect::from_center_size(rect.center, Vec2::splat(12.0)),
+                        radius: 6.0,
+                        squircle: 2.0,
+                        // Dimmed on an unfocused window, so only the window you
+                        // are in advertises what can be done to it.
+                        color: if front { *colour } else { colour.fade(0.35) },
+                    }),
+                )
+                .opacity(opacity)
+                .z(6),
+            );
         }
 
-        let (opacity, scale) = self.navigator.incoming(now);
-        let current = self.navigator.current();
-        self.draw_destination(
-            current,
-            area,
-            opacity * recede_opacity,
-            scale * recede_scale,
-            now,
-            time,
+        let bar = window.titlebar();
+        self.frame.push(
+            Item::new(
+                Id::of("window-icon").nth(window.id.0),
+                Layer::Content,
+                Primitive::Icon(Icon {
+                    rect: Rect::from_center_size(
+                        Vec2 { x: bar.min().x + 20.0, y: bar.center.y },
+                        Vec2::splat(15.0),
+                    ),
+                    shape: window.app.icon(),
+                    stroke: ICON_STROKE,
+                    color: self.palette.text_faint,
+                    rim: 0.2,
+                }),
+            )
+            .opacity(opacity)
+            .z(6),
         );
+
+        self.frame.push(
+            Item::new(
+                Id::of("window-title").nth(window.id.0),
+                Layer::Content,
+                Primitive::Text(Text {
+                    text: window.app.name().into(),
+                    // Left-aligned text starts at the rect's left edge, so the
+                    // rect is centred half its width to the right of where the
+                    // title should begin.
+                    rect: Rect::from_min_size(
+                        Vec2 {
+                            x: bar.min().x + 38.0,
+                            y: bar.center.y - text::LABEL.size,
+                        },
+                        Vec2 {
+                            x: (bar.width() - 110.0).max(20.0),
+                            y: text::LABEL.size * 2.0,
+                        },
+                    ),
+                    size: text::LABEL.size,
+                    weight: text::LABEL.weight,
+                    tracking: text::LABEL.tracking,
+                    line_height: text::LABEL.line_height,
+                    color: if front { self.palette.text } else { self.palette.text_faint },
+                    align: Align::Left,
+                }),
+            )
+            .opacity(opacity)
+            .z(6),
+        );
+
+        let area = window.content().inset(space::ROOM);
+
+        match window.app {
+            App::Clock => {
+                let stamp = self.clock.now().zoned().timestamp();
+                self.clock_face.draw(
+                    &mut self.frame,
+                    &self.palette,
+                    area,
+                    time,
+                    &self.schedule,
+                    stamp,
+                    &self.zone,
+                    now,
+                    opacity,
+                    1.0,
+                );
+            }
+            App::Spotify if self.music.is_some() => {
+                let music = self.music.as_mut().expect("just checked");
+                let state = music.state().clone();
+                nowplaying::draw(&mut self.frame, &self.palette, area, &state, now, opacity, 1.0);
+            }
+            App::Files if self.vault.is_some() => {
+                let vault = self.vault.as_ref().expect("just checked");
+                self.browser
+                    .draw(&mut self.frame, &self.palette, area, vault, now, opacity, 1.0);
+            }
+            // Not built yet. The window still opens and says what it will be,
+            // rather than the app being hidden until it works — a system that
+            // looks finished and is not is worse than one visibly partway.
+            other => {
+                let _ = IconShape::Music;
+                self.frame.push(
+                    Item::new(
+                        Id::of("window-empty").nth(window.id.0),
+                        Layer::Content,
+                        Primitive::Text(Text {
+                            text: match other {
+                                App::Surf => "Surf has no engine yet".into(),
+                                App::Spotify => "Music is not connected".into(),
+                                App::Mail => "Mail is not built yet".into(),
+                                App::Studio => "Studio is not built yet".into(),
+                                _ => "Not built yet".into(),
+                            },
+                            rect: Rect::from_center_size(
+                                area.center,
+                                Vec2 { x: area.width(), y: text::HEADING.size * 2.0 },
+                            ),
+                            size: text::HEADING.size,
+                            weight: text::HEADING.weight,
+                            tracking: text::HEADING.tracking,
+                            line_height: text::HEADING.line_height,
+                            color: self.palette.text_faint,
+                            align: Align::Center,
+                        }),
+                    )
+                    .opacity(opacity)
+                    .z(5),
+                );
+            }
+        }
     }
 
     /// Files' keyboard, in one place (§9).
@@ -963,63 +1326,65 @@ impl Shell {
         }
     }
 
-    fn draw_destination(
-        &mut self,
-        destination: Destination,
-        area: Rect,
-        opacity: f32,
-        scale: f32,
-        now: Seconds,
-        time: &TimeOfDay,
-    ) {
-        match destination {
-            Destination::Home => {
-                self.home
-                    .draw(&mut self.frame, &self.palette, time, now, opacity, scale);
-            }
-            // Clock is its own environment rather than a placeholder layout.
-            Destination::Mode(Mode::Clock) => {
-                let stamp = self.clock.now().zoned().timestamp();
-                self.clock_face.draw(
-                    &mut self.frame,
-                    &self.palette,
-                    area,
-                    time,
-                    &self.schedule,
-                    stamp,
-                    &self.zone,
-                    now,
-                    opacity,
-                    scale,
-                );
-            }
-            // Files is its own environment too, once it has a vault. Without
-            // one it falls through to the placeholder layout below rather than
-            // drawing an empty frame.
-            Destination::Mode(Mode::Files) if self.vault.is_some() => {
-                let vault = self.vault.as_ref().expect("just checked");
-                self.browser.draw(
-                    &mut self.frame,
-                    &self.palette,
-                    area,
-                    vault,
-                    now,
-                    opacity,
-                    scale,
-                );
-            }
-            Destination::Mode(mode) => {
-                let mut canvas = Canvas {
-                    frame: &mut self.frame,
-                    palette: &self.palette,
-                    area,
-                    opacity,
-                    scale,
-                    time,
-                };
-                content::draw(mode, &mut canvas);
-            }
-        }
+}
+
+
+/// A window's pane.
+///
+/// Two rules are doing work here, and both come from how glass composites.
+///
+/// The pane sits in [`Layer::Environment`], not `Content`, because the app
+/// inside it draws its own glass — Spotify's artwork panel, for one — and two
+/// glass surfaces that overlap cannot be composited in a single pass. Putting
+/// the window one layer down means the app's glass refracts *the window*, and
+/// the window refracts the wallpaper, which is also what they physically are.
+///
+/// And only the focused window is glass at all. Two overlapping windows would
+/// be two overlapping glass surfaces in the same layer, which has the same
+/// problem and no layer left to solve it with. Behind the front one a window
+/// becomes a flat translucent panel — cheaper, and it says plainly which
+/// window you are in.
+fn frame_glass(frame: &mut Frame, palette: &Palette, rect: Rect, front: bool, opacity: f32) {
+    use detends_paint::{Fill, Glass};
+
+    let id = Id::of("window-glass").nth(rect.min().x as u64 ^ ((rect.min().y as u64) << 20));
+
+    if front {
+        frame.push(
+            Item::new(
+                id,
+                Layer::Environment,
+                Primitive::Glass(Glass {
+                    rect,
+                    radius: 18.0,
+                    squircle: 5.0,
+                    thickness: 16.0,
+                    bevel: 26.0,
+                    ior: 1.48,
+                    dispersion: 0.018,
+                    frost: 0.78,
+                    tint: palette.glass,
+                    rim: 0.95,
+                }),
+            )
+            .opacity(opacity)
+            .z(4),
+        );
+    } else {
+        frame.push(
+            Item::new(
+                id,
+                Layer::Environment,
+                Primitive::Fill(Fill {
+                    rect,
+                    radius: 18.0,
+                    squircle: 5.0,
+                    color: palette.ground.fade(0.72),
+                }),
+            )
+            .opacity(opacity)
+            .z(4),
+        );
     }
 }
 
@@ -1073,114 +1438,24 @@ mod tests {
             "the cluster should show the time"
         );
 
-        // Boot lands on Home, which shows the time and the five places rather
-        // than dropping the user into a mode with nothing to press.
-        assert!(shell.at_home());
-        for mode in Mode::ALL {
-            assert!(s.iter().any(|t| t == mode.name()), "{mode:?} is not offered");
-        }
+        // Boot lands on an empty desktop: the wallpaper and the dock. Nothing
+        // is opened for you, which is the point of a dock.
+        assert!(shell.showing_desktop());
         assert!(
             !s.iter().any(|t| t == "HOME" || t == "DÉTENDS"),
-            "Home should not label itself"
+            "the desktop should not label itself"
         );
-    }
-
-    #[test]
-    fn every_place_can_be_pressed_from_home() {
-        // The fix for a system that appeared to do nothing: the five places
-        // are reachable with a pointer, not only by unannounced keystrokes.
-        let (mut shell, t) = booted();
-        for (mode, rect) in crate::home::layout(vec2(1512.0, 982.0)) {
-            shell.go_home(t);
-            shell.tick(t);
-            shell.input(
-                t,
-                &Event::PointerDown {
-                    x: rect.center.x,
-                    y: rect.center.y,
-                    button: MouseButton::Left,
-                },
-            );
-            assert_eq!(shell.mode(), Some(mode), "clicking {mode:?} did nothing");
-        }
     }
 
     #[test]
     fn a_bare_number_goes_to_its_place() {
         // No modifier, so nothing in the window system can intercept it.
         let (mut shell, mut t) = booted();
-        for mode in Mode::ALL {
+        for mode in App::ALL {
             t += 1.0;
-            press(&mut shell, t, Key::Mode(mode.index()));
-            assert_eq!(shell.mode(), Some(mode), "{} did nothing", mode.index());
-        }
-    }
-
-    #[test]
-    fn escape_backs_out_to_home_rather_than_quitting() {
-        let (mut shell, t) = booted();
-        shell.go(t, Mode::Studio);
-        assert!(!shell.at_home());
-
-        press(&mut shell, t, Key::Escape);
-        assert!(shell.at_home(), "Escape should land Home");
-    }
-
-    #[test]
-    fn escape_dismisses_a_surface_before_leaving_the_mode() {
-        // One step back at a time, so Escape never throws away more than the
-        // user meant.
-        let (mut shell, t) = booted();
-        shell.go(t, Mode::Mail);
-        shell.open_search(t);
-
-        press(&mut shell, t, Key::Escape);
-        assert!(!shell.search_is_open());
-        assert_eq!(shell.mode(), Some(Mode::Mail), "it left the mode too");
-
-        press(&mut shell, t, Key::Escape);
-        assert!(shell.at_home());
-    }
-
-    #[test]
-    fn arrow_keys_and_enter_work_at_home() {
-        let (mut shell, t) = booted();
-        assert_eq!(shell.home_selection(), Mode::Music);
-
-        press(&mut shell, t, Key::Right);
-        press(&mut shell, t, Key::Right);
-        assert_eq!(shell.home_selection(), Mode::Mail);
-
-        press(&mut shell, t, Key::Enter);
-        assert_eq!(shell.mode(), Some(Mode::Mail));
-    }
-
-    #[test]
-    fn coming_back_home_remembers_where_you_were() {
-        let (mut shell, t) = booted();
-        shell.go(t, Mode::Files);
-        shell.go_home(t);
-        assert_eq!(shell.home_selection(), Mode::Files);
-    }
-
-    #[test]
-    fn super_number_goes_to_each_of_the_five_places() {
-        let (mut shell, mut t) = booted();
-        for mode in Mode::ALL {
-            t += 1.0;
-            shell.input(
-                t,
-                &Event::KeyDown {
-                    key: Key::Mode(mode.index()),
-                    modifiers: sys(),
-                },
-            );
-            assert_eq!(
-                shell.mode(),
-                Some(mode),
-                "Super+{} should go to {mode:?}",
-                mode.index()
-            );
+            let _ = mode;
+            press(&mut shell, t, Key::Mode(1));
+            assert_eq!(shell.focused_app(), Some(App::ALL[0]), "slot 1 did nothing");
         }
     }
 
@@ -1189,7 +1464,7 @@ mod tests {
         // A digit navigates — except while Search has the keyboard, where it
         // has to be a character or the field would be unusable.
         let (mut shell, t) = booted();
-        shell.go(t, Mode::Files);
+        shell.open(t, App::Files);
         shell.open_search(t);
         shell.input(
             t,
@@ -1199,7 +1474,7 @@ mod tests {
             },
         );
         assert!(shell.search_is_open(), "the field closed");
-        assert_eq!(shell.mode(), Some(Mode::Files), "a digit navigated while typing");
+        assert_eq!(shell.focused_app(), Some(App::Files), "a digit navigated while typing");
     }
 
     #[test]
@@ -1213,29 +1488,13 @@ mod tests {
                 modifiers: sys(),
             },
         );
-        assert!(shell.at_home(), "a keystroke landed during boot");
-    }
-
-    #[test]
-    fn switching_modes_draws_both_for_a_moment() {
-        let (mut shell, t) = booted();
-        shell.go(t, Mode::Music);
-
-        let s = texts(shell.tick(t + 0.06).frame);
-        assert!(
-            s.iter().any(|x| x == "Resonance"),
-            "the arriving mode is missing"
-        );
-        assert!(
-            s.iter().any(|x| x.contains("September")),
-            "the leaving mode is missing"
-        );
+        assert!(shell.showing_desktop(), "a keystroke landed during boot");
     }
 
     #[test]
     fn the_leaving_mode_stops_being_drawn_once_it_has_gone() {
         let (mut shell, t) = booted();
-        shell.go(t, Mode::Music);
+        shell.open(t, App::Spotify);
         let s = texts(shell.tick(t + 2.0).frame);
         assert!(
             !s.iter().any(|x| x.contains("September")),
@@ -1251,44 +1510,6 @@ mod tests {
             !shell.tick(t + 5.0).frame.animating,
             "still animating after settling"
         );
-    }
-
-    #[test]
-    fn a_mode_switch_makes_it_animate_again() {
-        let (mut shell, t) = booted();
-        shell.tick(t + 5.0);
-        shell.go(t + 5.0, Mode::Files);
-        assert!(shell.tick(t + 5.01).frame.animating);
-    }
-
-    #[test]
-    fn focus_quietens_the_chrome_without_touching_the_content() {
-        // §12: Focus should make détends quieter, not announce itself.
-        let (mut shell, t) = booted();
-        // The mode label only exists inside a mode; Home does not name itself.
-        shell.go(t, Mode::Mail);
-        shell.tick(t + 2.0);
-        let bright = shell
-            .tick(t + 2.0)
-            .frame
-            .items
-            .iter()
-            .find(|i| i.id == detends_paint::Id::of("mode-label"))
-            .map(|i| i.opacity)
-            .expect("mode label");
-
-        shell.begin_focus(t + 2.0, Some("Physics homework".into()), Some(25.0 * 60.0));
-        let dim = shell
-            .tick(t + 4.0)
-            .frame
-            .items
-            .iter()
-            .find(|i| i.id == detends_paint::Id::of("mode-label"))
-            .map(|i| i.opacity)
-            .expect("mode label");
-
-        assert!(dim < bright, "navigation should recede: {dim} vs {bright}");
-        assert!(dim > 0.2, "it must stay usable, not vanish");
     }
 
     #[test]
@@ -1321,16 +1542,16 @@ mod tests {
         // Rule 8, checked structurally: starting Focus must not change where
         // the user is.
         let (mut shell, t) = booted();
-        shell.go(t, Mode::Mail);
+        shell.open(t, App::Mail);
         shell.begin_focus(t, None, None);
-        assert_eq!(shell.mode(), Some(Mode::Mail));
+        assert_eq!(shell.focused_app(), Some(App::Mail));
     }
 
     #[test]
     fn layers_never_overlap_within_themselves() {
         let (mut shell, mut t) = booted();
-        for mode in Mode::ALL {
-            shell.go(t, mode);
+        for mode in App::ALL {
+            shell.open(t, mode);
             for _ in 0..30 {
                 t += 1.0 / 60.0;
                 let frame = shell.tick(t).frame;
@@ -1429,7 +1650,7 @@ mod tests {
         press(&mut shell, t, Key::Enter);
 
         assert!(!shell.search_is_open(), "the field stayed open");
-        assert_eq!(shell.mode(), Some(Mode::Files));
+        assert_eq!(shell.focused_app(), Some(App::Files));
     }
 
     #[test]
@@ -1445,26 +1666,157 @@ mod tests {
     #[test]
     fn escape_closes_search_without_running_anything() {
         let (mut shell, t) = booted();
-        shell.go(t, Mode::Files);
+        shell.open(t, App::Files);
         shell.open_search(t);
         type_into_search(&mut shell, t, "music");
         press(&mut shell, t, Key::Escape);
 
         assert!(!shell.search_is_open());
-        assert_eq!(shell.mode(), Some(Mode::Files), "Escape should not have navigated");
+        assert_eq!(shell.focused_app(), Some(App::Files), "Escape should not have navigated");
+    }
+
+    /// Open System Center and return where its panel is.
+    fn with_center_open(shell: &mut Shell, t: Seconds) -> Rect {
+        shell.open_center(t);
+        // The panel is placed from the cluster, which is only known once a
+        // frame has been built.
+        shell.tick(t);
+        center::resting_place(shell.cluster_bounds, shell.size)
+    }
+
+    fn click(shell: &mut Shell, t: Seconds, at: Vec2) {
+        shell.input(
+            t,
+            &Event::PointerDown { x: at.x, y: at.y, button: MouseButton::Left },
+        );
+        shell.input(
+            t,
+            &Event::PointerUp { x: at.x, y: at.y, button: MouseButton::Left },
+        );
     }
 
     #[test]
-    fn digits_typed_into_search_are_text_not_mode_switches() {
-        // Super+2 goes to Clock; a bare 2 while searching is a character.
+    fn the_system_center_toggles_actually_change_the_system() {
         let (mut shell, t) = booted();
-        shell.go(t, Mode::Mail);
-        shell.open_search(t);
-        type_into_search(&mut shell, t, "timer 2");
-        press(&mut shell, t, Key::Mode(5));
+        let panel = with_center_open(&mut shell, t);
+        let layout = center::layout(panel);
 
-        assert_eq!(shell.mode(), Some(Mode::Mail), "a digit navigated");
-        assert!(shell.search_is_open());
+        let target = |control: center::Control| {
+            layout
+                .toggles
+                .iter()
+                .find(|(c, _)| *c == control)
+                .map(|(_, r)| r.center)
+                .expect("control has a target")
+        };
+
+        // Wi-Fi off, then on again.
+        assert!(shell.system.wifi_on());
+        click(&mut shell, t, target(center::Control::Wifi));
+        assert!(!shell.system.wifi_on(), "Wi-Fi did not turn off");
+        click(&mut shell, t, target(center::Control::Wifi));
+        assert!(shell.system.wifi_on(), "Wi-Fi did not come back");
+
+        // Bluetooth names what it is connected to rather than saying "On".
+        click(&mut shell, t, target(center::Control::Bluetooth));
+        assert!(shell.system.bluetooth.is_some());
+
+        // Airplane settles every radio at once (§11).
+        click(&mut shell, t, target(center::Control::Airplane));
+        assert!(shell.system.airplane);
+        assert!(!shell.system.wifi_on(), "Airplane left Wi-Fi on");
+        assert!(shell.system.bluetooth.is_none(), "Airplane left Bluetooth on");
+    }
+
+    #[test]
+    fn asking_for_a_radio_leaves_airplane_mode_rather_than_refusing() {
+        let (mut shell, t) = booted();
+        let panel = with_center_open(&mut shell, t);
+        let layout = center::layout(panel);
+        let wifi = layout.toggles.iter().find(|(c, _)| *c == center::Control::Wifi).unwrap().1;
+
+        shell.set_airplane(t, true);
+        click(&mut shell, t, wifi.center);
+
+        assert!(!shell.system.airplane, "it should have left Airplane Mode");
+        assert!(shell.system.wifi_on());
+    }
+
+    #[test]
+    fn focus_can_be_started_and_ended_from_system_center() {
+        // Focus is a state, not a mode (§12) — which is why it belongs here.
+        let (mut shell, t) = booted();
+        let panel = with_center_open(&mut shell, t);
+        let layout = center::layout(panel);
+        let focus = layout.toggles.iter().find(|(c, _)| *c == center::Control::Focus).unwrap().1;
+
+        assert!(shell.focus.is_none());
+        click(&mut shell, t, focus.center);
+        assert!(shell.focus.is_some(), "Focus did not begin");
+        click(&mut shell, t, focus.center);
+        assert!(shell.focus.is_none(), "Focus did not end");
+    }
+
+    #[test]
+    fn the_sliders_can_be_dragged() {
+        let (mut shell, t) = booted();
+        let panel = with_center_open(&mut shell, t);
+        let (_, track) = center::layout(panel).sliders[0];
+
+        // Press near the left end, then drag to the right end.
+        shell.input(
+            t,
+            &Event::PointerDown {
+                x: track.min().x + 2.0,
+                y: track.center.y,
+                button: MouseButton::Left,
+            },
+        );
+        assert!(shell.system.volume < 0.05, "the press should have set it");
+
+        shell.input(t, &Event::PointerMoved { x: track.max().x, y: track.center.y });
+        assert!(shell.system.volume > 0.95, "the drag did not follow");
+    }
+
+    #[test]
+    fn a_drag_keeps_working_outside_the_panel_and_stops_on_release() {
+        // Letting go ends a drag; leaving the track does not. Otherwise a
+        // slider drops the moment your hand moves slightly off it.
+        let (mut shell, t) = booted();
+        let panel = with_center_open(&mut shell, t);
+        let (_, track) = center::layout(panel).sliders[1];
+
+        shell.input(
+            t,
+            &Event::PointerDown {
+                x: track.center.x,
+                y: track.center.y,
+                button: MouseButton::Left,
+            },
+        );
+        shell.input(t, &Event::PointerMoved { x: track.min().x - 400.0, y: 900.0 });
+        assert!(shell.system.brightness < 0.05, "the drag stopped at the edge");
+
+        shell.input(
+            t,
+            &Event::PointerUp { x: 0.0, y: 900.0, button: MouseButton::Left },
+        );
+        shell.input(t, &Event::PointerMoved { x: track.max().x, y: track.center.y });
+        assert!(shell.system.brightness < 0.05, "it kept dragging after release");
+    }
+
+    #[test]
+    fn clicking_the_panel_background_does_not_dismiss_it() {
+        // Only clicking *away* dismisses. A press that misses a control inside
+        // the panel should do nothing at all.
+        let (mut shell, t) = booted();
+        let panel = with_center_open(&mut shell, t);
+
+        click(&mut shell, t, Vec2 { x: panel.center.x, y: panel.min().y + 2.0 });
+        assert!(shell.system_center_is_open(), "it closed under its own contents");
+
+        click(&mut shell, t, Vec2 { x: 40.0, y: 900.0 });
+        assert!(!shell.system_center_is_open(), "clicking away should dismiss");
     }
 
     #[test]
@@ -1472,7 +1824,7 @@ mod tests {
         // The pair matters: Escape must always be safe to press, which is only
         // true because there is a separate, deliberate way out.
         let (mut shell, t) = booted();
-        shell.go(t, Mode::Clock);
+        shell.open(t, App::Clock);
 
         press(&mut shell, t, Key::Escape);
         assert!(shell.take_power_request().is_none(), "Escape quit the system");
@@ -1489,25 +1841,6 @@ mod tests {
     }
 
     #[test]
-    fn escape_leaves_every_mode_that_owns_the_keyboard() {
-        // Clock, Files and Home each claim bare keys. Escape is a global
-        // gesture and must reach the shell through all of them — a mode that
-        // swallows it is a mode you cannot get out of.
-        for mode in [Mode::Clock, Mode::Files, Mode::Music] {
-            let (mut shell, t) = booted();
-            shell.go(t, mode);
-            assert_eq!(shell.mode(), Some(mode));
-
-            press(&mut shell, t, Key::Escape);
-            assert_eq!(
-                shell.mode(),
-                None,
-                "Escape did not leave {mode:?} — it was swallowed"
-            );
-        }
-    }
-
-    #[test]
     fn digits_typed_into_a_files_name_are_text_not_mode_switches() {
         // The same rule Search follows: 1-5 navigate, but never out of a field
         // someone is typing a name into. "Week 1" must be a nameable folder.
@@ -1520,7 +1853,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         shell.open_vault(root.clone());
-        shell.go(t, Mode::Files);
+        shell.open(t, App::Files);
 
         shell.show_place(t, Place::Studio);
         shell.browser_mut().begin_new_folder();
@@ -1529,7 +1862,7 @@ mod tests {
         }
         press(&mut shell, t, Key::Mode(1));
 
-        assert_eq!(shell.mode(), Some(Mode::Files), "a digit navigated away");
+        assert_eq!(shell.focused_app(), Some(App::Files), "a digit navigated away");
 
         press(&mut shell, t, Key::Enter);
         let names: Vec<String> = shell
@@ -1541,24 +1874,6 @@ mod tests {
         assert_eq!(names, ["Week 1"], "the digit should have been typed");
 
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn super_number_still_works_while_search_is_open() {
-        let (mut shell, t) = booted();
-        shell.open_search(t);
-        shell.input(
-            t,
-            &Event::KeyDown {
-                key: Key::Mode(1),
-                modifiers: sys(),
-            },
-        );
-        assert_eq!(shell.mode(), Some(Mode::Music));
-        assert!(
-            !shell.search_is_open(),
-            "navigating should dismiss the field"
-        );
     }
 
     #[test]
@@ -1575,7 +1890,7 @@ mod tests {
         press(&mut shell, t, Key::Enter);
 
         // A timer is a real timer now, not a Focus session wearing its name.
-        assert_eq!(shell.mode(), Some(Mode::Clock), "a timer belongs in Clock");
+        assert_eq!(shell.focused_app(), Some(App::Clock), "a timer belongs in Clock");
         assert_eq!(shell.schedule().timers.len(), 1);
         assert!((shell.schedule().timers[0].duration - 1200.0).abs() < 1.0);
         assert!(shell.focus().is_none(), "a timer is not a Focus session");
@@ -1589,8 +1904,8 @@ mod tests {
         type_into_search(&mut shell, t, "timer 10 seconds");
         press(&mut shell, t, Key::Enter);
 
-        shell.go(t, Mode::Mail);
-        assert_eq!(shell.mode(), Some(Mode::Mail));
+        shell.open(t, App::Mail);
+        assert_eq!(shell.focused_app(), Some(App::Mail));
 
         // The shell's wall clock is frozen in tests, so advance it past the
         // timer's end and tick.
@@ -1620,7 +1935,7 @@ mod tests {
     #[test]
     fn clock_opens_on_its_utilities() {
         let (mut shell, t) = booted();
-        shell.go(t, Mode::Clock);
+        shell.open(t, App::Clock);
         let s = texts(shell.tick(t + 1.0).frame);
         for name in ["Timers", "Alarms", "Stopwatch", "World"] {
             assert!(s.iter().any(|x| x == name), "missing {name} in {s:?}");
@@ -1697,58 +2012,6 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_recedes_behind_a_temporary_surface() {
-        // Rule 2: one thing owns attention at a time. With Search up, the mode
-        // behind it must step back rather than compete.
-        let (mut shell, t) = booted();
-        shell.go(t, Mode::Music);
-        shell.tick(t + 2.0);
-
-        let opacity_of = |shell: &mut Shell, at: Seconds| {
-            shell
-                .tick(at)
-                .frame
-                .items
-                .iter()
-                .find(|i| i.id == detends_paint::Id::of("music-track"))
-                .map(|i| i.opacity)
-                .expect("the track title")
-        };
-
-        let bright = opacity_of(&mut shell, t + 2.0);
-        shell.open_search(t + 2.0);
-        let dim = opacity_of(&mut shell, t + 3.0);
-
-        assert!(
-            dim < bright * 0.7,
-            "the workspace did not recede: {dim} vs {bright}"
-        );
-        assert!(
-            dim > 0.1,
-            "it receded into nothing, which is a different mistake"
-        );
-    }
-
-    #[test]
-    fn the_workspace_comes_back_when_the_surface_closes() {
-        let (mut shell, t) = booted();
-        shell.go(t, Mode::Music);
-        shell.open_search(t);
-        shell.tick(t + 1.0);
-        shell.close_search(t + 1.0);
-
-        let restored = shell
-            .tick(t + 3.0)
-            .frame
-            .items
-            .iter()
-            .find(|i| i.id == detends_paint::Id::of("music-track"))
-            .map(|i| i.opacity)
-            .expect("the track title");
-        assert!(restored > 0.95, "the workspace stayed dim: {restored}");
-    }
-
-    #[test]
     fn opening_a_surface_makes_the_shell_animate_again() {
         let (mut shell, t) = booted();
         shell.tick(t + 5.0);
@@ -1757,15 +2020,77 @@ mod tests {
     }
 
     #[test]
-    fn resizing_recentres_the_workspace() {
+    fn a_window_recedes_behind_a_temporary_surface() {
+        // Rule 2 survives the move to windows: with Search up, what is behind
+        // it steps back rather than competing.
         let (mut shell, t) = booted();
-        shell.resize(vec2(3840.0, 2160.0), 2.0);
+        shell.open(t, App::Clock);
+        shell.tick(t + 2.0);
+
+        let opacity_of = |shell: &mut Shell, at: Seconds| {
+            shell
+                .tick(at)
+                .frame
+                .items
+                .iter()
+                .find(|i| i.id == detends_paint::Id::of("clock-time"))
+                .map(|i| i.opacity)
+                .expect("the clock face")
+        };
+
+        let bright = opacity_of(&mut shell, t + 2.0);
+        shell.open_search(t + 2.0);
+        let dim = opacity_of(&mut shell, t + 3.0);
+        assert!(dim < bright, "the window did not recede: {dim} vs {bright}");
+
+        shell.close_search(t + 3.0);
+        let back = opacity_of(&mut shell, t + 6.0);
+        assert!(back > dim, "it did not come back");
+    }
+
+    #[test]
+    fn the_focused_window_is_brighter_than_the_one_behind_it() {
+        // What replaced "one mode at a time": attention still belongs to one
+        // window, and the others say so by receding.
+        let (mut shell, t) = booted();
+        shell.open(t, App::Clock);
+        shell.open(t, App::Files);
         let frame = shell.tick(t + 1.0).frame;
-        let clock = frame
+
+        let glass: Vec<f32> = frame
             .items
             .iter()
-            .find(|i| i.id == detends_paint::Id::of("home-time"))
-            .expect("the clock");
-        assert!((clock.primitive.bounds().center.x - 1920.0).abs() < 2.0);
+            .filter(|i| i.layer == detends_paint::Layer::Environment)
+            .filter(|i| !matches!(i.primitive, Primitive::Image(_)))
+            .map(|i| i.opacity)
+            .collect();
+
+        assert_eq!(glass.len(), 2, "expected two window panes, got {glass:?}");
+        assert!(
+            glass.iter().any(|o| *o > 0.9) && glass.iter().any(|o| *o < 0.9),
+            "both windows are drawn at the same strength: {glass:?}"
+        );
+    }
+
+    #[test]
+    fn the_dock_offers_every_app_and_opening_one_shows_it() {
+        let (mut shell, t) = booted();
+        assert!(shell.showing_desktop());
+
+        for app in App::ALL {
+            let at = crate::dock::slots(vec2(1512.0, 982.0))
+                .iter()
+                .find(|(a, _)| *a == app)
+                .map(|(_, r)| r.center)
+                .expect("a dock slot");
+
+            shell.input(
+                t,
+                &Event::PointerDown { x: at.x, y: at.y, button: MouseButton::Left },
+            );
+            assert_eq!(shell.focused_app(), Some(app), "{app:?} did not open");
+        }
+
+        assert!(!shell.showing_desktop());
     }
 }

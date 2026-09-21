@@ -11,14 +11,15 @@
 //! guesses is worse than one that does not, because a wrong guess executed
 //! instantly is far more annoying than no match at all.
 
-use crate::mode::Mode;
+use crate::app::App;
 use detends_paint::Seconds;
 
 /// Something the user asked for.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     /// Go to one of the five places.
-    Go(Mode),
+    /// Open an app from the dock's set.
+    Open(App),
     /// Start a timer of this many seconds, with an optional name.
     Timer {
         seconds: Seconds,
@@ -109,7 +110,12 @@ pub fn parse(query: &str) -> Option<Command> {
     }
 
     // Finally the five places, by prefix.
-    Mode::matching(&q).map(Command::Go)
+    // By prefix, so "sp" reaches Spotify and "fi" reaches Files.
+    App::ALL
+        .iter()
+        .copied()
+        .find(|app| app.name().to_lowercase().starts_with(&q))
+        .map(Command::Open)
 }
 
 fn parse_timer(q: &str) -> Option<Command> {
@@ -330,7 +336,7 @@ mod tests {
             })
         );
         assert_eq!(parse("Wi-Fi"), Some(Command::Setting(Setting::Wifi)));
-        assert_eq!(parse("Clock"), Some(Command::Go(Mode::Clock)));
+        assert_eq!(parse("Clock"), Some(Command::Open(App::Clock)));
     }
 
     #[test]
@@ -403,10 +409,10 @@ mod tests {
     }
 
     #[test]
-    fn every_mode_is_reachable_by_name() {
-        for mode in Mode::ALL {
-            assert_eq!(parse(mode.name()), Some(Command::Go(mode)));
-            assert_eq!(parse(&mode.name().to_uppercase()), Some(Command::Go(mode)));
+    fn every_app_is_reachable_by_name() {
+        for app in App::ALL {
+            assert_eq!(parse(app.name()), Some(Command::Open(app)));
+            assert_eq!(parse(&app.name().to_uppercase()), Some(Command::Open(app)));
         }
     }
 
@@ -489,12 +495,12 @@ mod tests {
         for c in "mail".chars() {
             s.push(c);
         }
-        assert_eq!(s.command(), Some(Command::Go(Mode::Mail)));
+        assert_eq!(s.command(), Some(Command::Open(App::Mail)));
 
         s.backspace();
         s.backspace();
         assert_eq!(s.query(), "ma");
-        assert_eq!(s.command(), Some(Command::Go(Mode::Mail)));
+        assert_eq!(s.command(), Some(Command::Open(App::Mail)));
 
         // Backspacing past the start is harmless.
         for _ in 0..10 {

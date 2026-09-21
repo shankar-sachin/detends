@@ -26,6 +26,8 @@ struct Options {
     /// `path-2.png`, … from a single run.
     capture_at: Vec<f64>,
     /// Which mode a capture should be showing.
+    /// Which app to open before capturing. Still spelled `--mode` so existing
+    /// scripts keep working.
     mode: Option<String>,
     /// A surface to open before capturing: "search" or "center".
     open: Option<String>,
@@ -203,6 +205,30 @@ impl ApplicationHandler for App {
             shell.open_vault(root);
         }
 
+        // Music. Spotify when the user has set up a client ID, and the local
+        // player otherwise — which is what makes Music a working mode on a
+        // machine with no account rather than an error message (§4).
+        //
+        // A capture always gets the local player: a screenshot must not reach
+        // the network, and must not show whatever the user happens to be
+        // listening to.
+        if self.options.capture.is_some() {
+            shell.use_local_music();
+        } else {
+            let spotify = detends_music::SpotifyProvider::from_default_path();
+            let credentials = detends_music::SpotifyCredentials::default_path()
+                .map(|p| detends_music::SpotifyCredentials::load(&p))
+                .unwrap_or_default();
+
+            if credentials.configured() {
+                log::info!("music: Spotify");
+                shell.set_music(detends_music::Music::start(Box::new(spotify)));
+            } else {
+                log::info!("music: local player (no Spotify client ID configured)");
+                shell.use_local_music();
+            }
+        }
+
         // The logo. Boot falls back to a typographic mark if either file is
         // missing, so a broken asset costs the artwork rather than the boot.
         let mut renderer = renderer;
@@ -315,6 +341,9 @@ impl ApplicationHandler for App {
                     Self::act_on_power(power, shell, event_loop);
                     return;
                 }
+                if let Some(level) = shell.take_volume_request() {
+                    Self::apply_volume(level);
+                }
 
                 window.request_redraw();
             }
@@ -333,6 +362,12 @@ impl ApplicationHandler for App {
                         input::Event::PointerUp { x, y, button }
                     },
                 );
+
+                // A volume drag ends here, on release — not on a keystroke.
+                if let Some(level) = shell.take_volume_request() {
+                    Self::apply_volume(level);
+                }
+
                 window.request_redraw();
             }
 
@@ -411,17 +446,24 @@ impl App {
         let step = 1.0 / 120.0;
         let mut t = 0.0;
 
-        // Run boot to completion first, then switch, so a capture of a mode is
-        // of the settled mode rather than of it arriving.
+        // Run boot to completion first, then open, so a capture of an app is
+        // of the settled window rather than of it arriving.
         if let Some(name) = self.options.mode.clone() {
-            if let Some(mode) = detends_shell::Mode::matching(&name) {
-                while t < 6.0 {
-                    t += step;
-                    shell.tick(t);
+            let wanted = name.to_lowercase();
+            let app = detends_shell::App::ALL
+                .iter()
+                .copied()
+                .find(|a| a.name().to_lowercase().starts_with(&wanted));
+
+            match app {
+                Some(app) => {
+                    while t < 6.0 {
+                        t += step;
+                        shell.tick(t);
+                    }
+                    shell.open(t, app);
                 }
-                shell.go(t, mode);
-            } else {
-                log::warn!("no mode called {name:?}");
+                None => log::warn!("no app called {name:?}"),
             }
         } else {
             // Always let boot finish, so a capture is of the settled shell.
@@ -512,6 +554,40 @@ impl App {
 }
 
 impl App {
+
+    /// Set the machine's output volume (§10, §18).
+    ///
+    /// macOS only, and through `osascript` rather than CoreAudio: this is a
+    /// stopgap until the real device layer arrives in Milestone 8, and a
+    /// stopgap that is thirty lines and obviously correct beats one that is
+    /// three hundred and has to be maintained. Spawned and forgotten — the
+    /// shell has already drawn the new value, and making the interface wait on
+    /// a process to agree would be exactly backwards.
+    ///
+    /// Brightness is deliberately not here. There is no supported command-line
+    /// path to it on macOS, and shelling out to a private framework to move a
+    /// slider is not a trade worth making.
+    fn apply_volume(level: f32) {
+        #[cfg(target_os = "macos")]
+        {
+            let percent = (level.clamp(0.0, 1.0) * 100.0).round() as u32;
+            let script = format!("set volume output volume {percent}");
+            match std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .spawn()
+            {
+                Ok(_) => log::debug!("volume -> {percent}%"),
+                Err(e) => log::warn!("could not set volume: {e}"),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = level;
+            log::debug!("setting the device volume needs the audio layer — Milestone 8");
+        }
+    }
+
     /// Carry out a power request (§19).
     ///
     /// Only the two that end the session are real here; Lock and Sleep need a
@@ -560,20 +636,23 @@ impl App {
 
         // Three sizes across, every shape down: small enough to test legibility,
         // large enough to test the curves.
-        let sizes = [26.0_f32, 48.0, 96.0];
-        let columns = 5.0_f32;
+        let sizes = [24.0_f32, 42.0, 72.0];
+        // Seven across: the set has grown past what five columns can show on
+        // one screen, and an icon sheet that runs off the bottom defeats its
+        // own purpose.
+        let columns = 7.0_f32;
         let cell = Vec2 { x: size.x / columns, y: 132.0 };
         let top = 70.0;
 
         for (index, shape) in IconShape::ALL.iter().enumerate() {
-            let col = (index % 5) as f32;
-            let row = (index / 5) as f32;
+            let col = (index % 7) as f32;
+            let row = (index / 7) as f32;
             let origin = Vec2 {
                 x: cell.x * col + cell.x * 0.5,
                 y: top + row * cell.y,
             };
 
-            let mut x = origin.x - 74.0;
+            let mut x = origin.x - 58.0;
             for side in sizes {
                 frame.push(Item::new(
                     Id::of("icon").nth(index as u64 * 8 + side as u64),

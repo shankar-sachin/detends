@@ -97,6 +97,36 @@ impl System {
     /// rather than displaying a row of disconnected-state icons (§11) — the
     /// user turned the radios off deliberately and does not need to be told
     /// three times that they are off.
+    /// Turn Wi-Fi on or off.
+    ///
+    /// Turning a radio on leaves Airplane Mode, because asking for Wi-Fi while
+    /// in Airplane Mode can only mean one thing, and making the user turn
+    /// Airplane off first would be the system being pedantic at them (§11).
+    pub fn set_wifi(&mut self, on: bool) {
+        if on {
+            self.airplane = false;
+            self.network = Network::Wifi { bars: 3 };
+        } else {
+            self.network = Network::Offline;
+        }
+    }
+
+    pub fn wifi_on(&self) -> bool {
+        !self.airplane && !matches!(self.network, Network::Offline)
+    }
+
+    /// Turn Bluetooth on or off. Same rule about Airplane Mode.
+    pub fn set_bluetooth(&mut self, on: bool) {
+        if on {
+            self.airplane = false;
+            // A name rather than a bare "On": the useful fact about Bluetooth
+            // is what it is connected to (§10).
+            self.bluetooth = Some("AirPods");
+        } else {
+            self.bluetooth = None;
+        }
+    }
+
     pub fn indicators(&self) -> Vec<&'static str> {
         if self.airplane {
             return vec!["✈︎"];
